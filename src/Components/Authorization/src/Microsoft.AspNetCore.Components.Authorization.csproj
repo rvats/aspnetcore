@@ -1,17 +1,25 @@
 <Project Sdk="Microsoft.NET.Sdk.Razor">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;$(DefaultNetCoreTargetFramework)</TargetFrameworks>
-    <TargetFrameworks Condition="'$(DotNetBuildFromSource)' == 'true'">$(DefaultNetCoreTargetFramework)</TargetFrameworks>
+    <TargetFramework>$(DefaultNetCoreTargetFramework)</TargetFramework>
     <IsAspNetCoreApp>true</IsAspNetCoreApp>
     <Description>Authentication and authorization support for Blazor applications.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <RazorLangVersion>3.0</RazorLangVersion>
+    <IsTrimmable>true</IsTrimmable>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="Microsoft.AspNetCore.Authorization" />
-    <Reference Include="Microsoft.AspNetCore.Components" />
+    <ProjectReference Include="$(RepoRoot)src\Components\Components\src\Microsoft.AspNetCore.Components.csproj" />
+    <ProjectReference Include="$(RepoRoot)src\Security\Authorization\Core\src\Microsoft.AspNetCore.Authorization.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(ComponentsSharedSourceRoot)src\HotReloadManager.cs" LinkBase="HotReload" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Properties\ILLink.Substitutions.xml" LogicalName="ILLink.Substitutions.xml" />
   </ItemGroup>
 
 </Project>

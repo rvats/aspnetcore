@@ -1,75 +1,101 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Net;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
-using Xunit;
+using Microsoft.Extensions.Hosting;
 
-namespace Microsoft.AspNetCore.Diagnostics.HealthChecks
+namespace Microsoft.AspNetCore.Diagnostics.HealthChecks;
+
+public class HealthCheckMiddlewareSampleTest
 {
-    public class HealthCheckMiddlewareSampleTest
+    [Fact]
+    public async Task BasicStartup()
     {
-        [Fact]
-        public async Task BasicStartup()
-        {
-            var builder = new WebHostBuilder()
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .UseStartup<HealthChecksSample.BasicStartup>();
+            }).Build();
 
-            var server = new TestServer(builder);
-            var client = server.CreateClient();
+        await host.StartAsync();
 
-            var response = await client.GetAsync("/health");
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Equal("text/plain", response.Content.Headers.ContentType.ToString());
-            Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
-        }
+        var server = host.GetTestServer();
+        var client = server.CreateClient();
 
-        [Fact]
-        public async Task CustomWriterStartup()
-        {
-            var builder = new WebHostBuilder()
+        var response = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType.ToString());
+        Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task CustomWriterStartup()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .UseStartup<HealthChecksSample.CustomWriterStartup>();
+            }).Build();
 
-            var server = new TestServer(builder);
-            var client = server.CreateClient();
+        await host.StartAsync();
 
-            var response = await client.GetAsync("/health");
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Equal("application/json", response.Content.Headers.ContentType.ToString());
+        var server = host.GetTestServer();
+        var client = server.CreateClient();
 
-            // Ignoring the body since it contains a bunch of statistics
-        }
+        var response = await client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType.ToString());
 
-        [Fact]
-        public async Task LivenessProbeStartup_Liveness()
-        {
-            var builder = new WebHostBuilder()
+        // Ignoring the body since it contains a bunch of statistics
+    }
+
+    [Fact]
+    public async Task LivenessProbeStartup_Liveness()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .UseStartup<HealthChecksSample.LivenessProbeStartup>();
+            }).Build();
 
-            var server = new TestServer(builder);
-            var client = server.CreateClient();
+        await host.StartAsync();
 
-            var response = await client.GetAsync("/health/live");
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Equal("text/plain", response.Content.Headers.ContentType.ToString());
-            Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
-        }
+        var server = host.GetTestServer();
+        var client = server.CreateClient();
 
-        [Fact]
-        public async Task LivenessProbeStartup_Readiness()
-        {
-            var builder = new WebHostBuilder()
+        var response = await client.GetAsync("/health/live");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType.ToString());
+        Assert.Equal("Healthy", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task LivenessProbeStartup_Readiness()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .UseStartup<HealthChecksSample.LivenessProbeStartup>();
+            }).Build();
 
-            var server = new TestServer(builder);
-            var client = server.CreateClient();
+        await host.StartAsync();
 
-            var response = await client.GetAsync("/health/ready");
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-            Assert.Equal("text/plain", response.Content.Headers.ContentType.ToString());
-            Assert.Equal("Unhealthy", await response.Content.ReadAsStringAsync());
-        }
+        var server = host.GetTestServer();
+        var client = server.CreateClient();
+
+        var response = await client.GetAsync("/health/ready");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("text/plain", response.Content.Headers.ContentType.ToString());
+        Assert.Equal("Unhealthy", await response.Content.ReadAsStringAsync());
     }
 }

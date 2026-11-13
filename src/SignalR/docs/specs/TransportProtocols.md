@@ -20,17 +20,25 @@ Throughout this document, the term `[endpoint-base]` is used to refer to the rou
 
 The `POST [endpoint-base]/negotiate` request is used to establish a connection between the client and the server.
 
+*negotiateVersion:*
+
 In the POST request the client sends a query string parameter with the key "negotiateVersion" and the value as the negotiate protocol version it would like to use. If the query string is omitted, the server treats the version as zero. The server will include a "negotiateVersion" property in the json response that says which version it will be using. The version is chosen as described below:
 * If the servers minimum supported protocol version is greater than the version requested by the client it will send an error response and close the connection
 * If the server supports the request version it will respond with the requested version
 * If the requested version is greater than the servers largest supported version the server will respond with its largest supported version
 The client may close the connection if the "negotiateVersion" in the response is not acceptable.
 
+*useAck:*
+
+In the POST request the client may include a query string parameter with the key "useAck" and the value of "true". If this is included the server will decide if it supports/allows the [ack protocol](#todo) described below, and return "useAck": "true" as a json property in the negotiate response if it will use the ack protocol. If true, the client can reconnect using the same transport and reuse the connectionToken/connectionId. The server may still reject the reconnect if it takes too long or for any reason it chooses. If false, the client must not reuse connectionToken/connectionId. If the "useAck" property is missing from the negotiate response this also implies false, so the ack protocol should not be used.
+
+-----------
+
 The content type of the response is `application/json` and is a JSON payload containing properties to assist the client in establishing a persistent connection. Extra JSON properties that the client does not know about should be ignored. This allows for future additions without breaking older clients.
 
 ### Version 1
 
-When the server and client agree on version 1 the server response will include a "connectionToken" property in addition to the "connectionId" property. The value of the "connectionToken" property will be used in the "id" query string for the HTTP requests described below, this value should be kept secret.
+When the server and client agree on version 1 the server response will include a "connectionToken" property in addition to the "connectionId" property. The value of the "connectionToken" property will be used in the "id" query string for the transport requests described below and in the `X-SignalR-Connection-Token` header for authentication refresh requests. This value should be kept secret.
 
 A successful negotiate response will look similar to the following payload:
   ```json
@@ -125,6 +133,12 @@ There are two other possible negotiation responses:
 
   * The `error` that gives details about why the negotiate failed.
 
+## `POST [endpoint-base]/refresh` request
+
+When authentication refresh is enabled, a client can re-authenticate an existing version 1 connection by sending a `POST` request to `[endpoint-base]/refresh`. The request must include the private `connectionToken` from negotiation in the `X-SignalR-Connection-Token` header. The token is not accepted from the query string. Because this header is not CORS-safelisted, a cross-origin browser request requires a successful CORS preflight.
+
+The response has content type `application/json`. A successful response can include a `tokenLifetimeSeconds` property with the lifetime of the refreshed authentication and an `accessToken` property containing a replacement transport access token.
+
 ## Transfer Formats
 
 ASP.NET Endpoints support two different transfer formats: `Text` and `Binary`. `Text` refers to UTF-8 text, and `Binary` refers to any arbitrary binary data. The transfer format serves two purposes. First, in the WebSockets transport, it is used to determine if `Text` or `Binary` WebSocket frames should be used to carry data. This is useful in debugging as most browser Dev Tools only show the content of `Text` frames. When using a text-based protocol like JSON, it is preferable for the WebSockets transport to use `Text` frames. How a client/server indicate the transfer format currently being used is implementation-defined.
@@ -157,7 +171,7 @@ If the relevant connection has been terminated, a `404 Not Found` status code is
 
 Server-Sent Events (SSE) is a protocol specified by WHATWG at [https://html.spec.whatwg.org/multipage/comms.html#server-sent-events](https://html.spec.whatwg.org/multipage/comms.html#server-sent-events). It is capable of sending data from server to client only, so it must be paired with the HTTP Post transport. It also requires a connection already be established using the `POST [endpoint-base]/negotiate` request.
 
-The protocol is similar to Long Polling in that the client opens a request to an endpoint and leaves it open. The server transmits frames as "events" using the SSE protocol. The protocol encodes a single event as a sequence of key-value pair lines, separated by `:` and using any of `\r\n`, `\n` or `\r` as line-terminators, followed by a final blank line. Keys can be duplicated and their values are concatenated with `\n`. So the following represents two events:
+The protocol is similar to Long Polling in that the client opens a request to an endpoint and leaves it open. The server transmits frames as "events" using the SSE protocol. The protocol encodes a single event as a sequence of key-value pair lines, separated by `:` and using any of `\r\n`, `\n` or `\r` as line-terminators, followed by a final blank line. SignalR currently only supports messages delimmited by `\r\n` and/or `\n` due to line buffering. Keys can be duplicated and their values are concatenated with `\n`. So the following represents two events:
 
 ```
 foo: bar

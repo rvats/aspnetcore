@@ -4,21 +4,23 @@
     <AssemblyName>Microsoft.DotNet.Open.Api.Tools.Tests</AssemblyName>
     <DefaultItemExcludes>$(DefaultItemExcludes);TestProjects\**\*</DefaultItemExcludes>
     <TestGroupName>DotNetAddOpenAPIReferenceToolsTests</TestGroupName>
+    <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
   </PropertyGroup>
 
   <PropertyGroup>
-    <OpenAPIToolCSProjPath>..\src\Microsoft.dotnet-openapi.csproj</OpenAPIToolCSProjPath>
+    <OpenAPIToolCSProjPath>$(RepoRoot)src\Tools\Microsoft.dotnet-openapi\src\Microsoft.dotnet-openapi.csproj</OpenAPIToolCSProjPath>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="$(ToolSharedSourceRoot)TestHelpers\**\*.cs" />
-    <Compile Include="$(SharedSourceRoot)test\SkipOnHelixAttribute.cs" />
     <Content Include="TestContent\*" LinkBase="TestContent\" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="$(SharedSourceRoot)Process\ProcessExtensions.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="Microsoft.Build" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" />
+    <PackageReference Include="NuGet.Frameworks" />
+
     <ProjectReference Include="$(OpenAPIToolCSProjPath)" />
   </ItemGroup>
 
@@ -41,11 +43,11 @@
     <RemoveDir Directories="$(TargetDir)TestProjects" Condition="Exists('$(TargetDir)TestProjects')" />
   </Target>
 
-  <Target Name="PublishDotNetOpenApiOnBuild" BeforeTargets="Build" Condition="'$(DotNetBuildFromSource)' != 'true'">
+  <Target Name="PublishDotNetOpenApiOnBuild" BeforeTargets="Build" Condition="'$(DotNetBuildSourceOnly)' != 'true' and '$(ExcludeFromBuild)' != 'true'">
     <MSBuild Projects="$(OpenAPIToolCSProjPath)" Targets="Publish" Properties="PublishDir=$(OutputPath)\tool\;Configuration=$(Configuration)" />
   </Target>
 
-  <Target Name="PublishDotNetOpenApiOnPublish" BeforeTargets="Publish"  Condition="'$(DotNetBuildFromSource)' != 'true'">
+  <Target Name="PublishDotNetOpenApiOnPublish" BeforeTargets="Publish"  Condition="'$(DotNetBuildSourceOnly)' != 'true' and '$(ExcludeFromBuild)' != 'true'">
     <MSBuild Projects="$(OpenAPIToolCSProjPath)" Targets="Publish" Properties="PublishDir=$(PublishDir)\tool\;Configuration=$(Configuration)" />
   </Target>
 </Project>

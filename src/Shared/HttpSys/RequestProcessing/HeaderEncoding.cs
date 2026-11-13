@@ -1,26 +1,29 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Text;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 
-namespace Microsoft.AspNetCore.HttpSys.Internal
+namespace Microsoft.AspNetCore.HttpSys.Internal;
+
+internal static class HeaderEncoding
 {
-    internal static class HeaderEncoding
+    internal static unsafe string GetString(byte* pBytes, int byteCount, bool useLatin1)
     {
-        // It should just be ASCII or ANSI, but they break badly with un-expected values. We use UTF-8 because it's the same for
-        // ASCII, and because some old client would send UTF8 Host headers and expect UTF8 Location responses
-        // (e.g. IE and HttpWebRequest on intranets).
-        private static Encoding Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
-
-        internal static unsafe string GetString(byte* pBytes, int byteCount)
+        string header;
+        if (useLatin1)
         {
-            return Encoding.GetString(new ReadOnlySpan<byte>(pBytes, byteCount));
+            header = new ReadOnlySpan<byte>(pBytes, byteCount).GetLatin1String();
+        }
+        else
+        {
+            header = new ReadOnlySpan<byte>(pBytes, byteCount).GetAsciiOrUTF8String(Encoding.UTF8);
         }
 
-        internal static byte[] GetBytes(string myString)
+        if (header.Contains('\0'))
         {
-            return Encoding.GetBytes(myString);
+            throw new InvalidOperationException();
         }
+        return header;
     }
 }

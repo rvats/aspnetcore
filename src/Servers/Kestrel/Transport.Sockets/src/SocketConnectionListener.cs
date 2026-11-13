@@ -1,156 +1,109 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Buffers;
 using System.Diagnostics;
-using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.Internal;
+using Microsoft.Extensions.Logging;
 
-namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets
+namespace Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets;
+
+internal sealed class SocketConnectionListener : IConnectionListener
 {
-    internal sealed class SocketConnectionListener : IConnectionListener
+    private readonly SocketConnectionContextFactory _factory;
+    private readonly ILogger _logger;
+    private Socket? _listenSocket;
+    private readonly SocketTransportOptions _options;
+
+    public EndPoint EndPoint { get; private set; }
+
+    internal SocketConnectionListener(
+        EndPoint endpoint,
+        SocketTransportOptions options,
+        ILoggerFactory loggerFactory)
     {
-        private readonly MemoryPool<byte> _memoryPool;
-        private readonly int _numSchedulers;
-        private readonly PipeScheduler[] _schedulers;
-        private readonly ISocketsTrace _trace;
-        private Socket _listenSocket;
-        private int _schedulerIndex;
-        private readonly SocketTransportOptions _options;
+        EndPoint = endpoint;
+        _options = options;
+        var logger = loggerFactory.CreateLogger("Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets");
+        _logger = logger;
+        _factory = new SocketConnectionContextFactory(new SocketConnectionFactoryOptions(options), logger);
+    }
 
-        public EndPoint EndPoint { get; private set; }
-
-        internal SocketConnectionListener(
-            EndPoint endpoint,
-            SocketTransportOptions options,
-            ISocketsTrace trace)
+    internal void Bind()
+    {
+        if (_listenSocket != null)
         {
-            EndPoint = endpoint;
-            _trace = trace;
-            _options = options;
-            _memoryPool = _options.MemoryPoolFactory();
-            var ioQueueCount = options.IOQueueCount;
-
-            if (ioQueueCount > 0)
-            {
-                _numSchedulers = ioQueueCount;
-                _schedulers = new IOQueue[_numSchedulers];
-
-                for (var i = 0; i < _numSchedulers; i++)
-                {
-                    _schedulers[i] = new IOQueue();
-                }
-            }
-            else
-            {
-                var directScheduler = new PipeScheduler[] { PipeScheduler.ThreadPool };
-                _numSchedulers = directScheduler.Length;
-                _schedulers = directScheduler;
-            }
+            throw new InvalidOperationException(SocketsStrings.TransportAlreadyBound);
         }
 
-        internal void Bind()
+        Socket listenSocket;
+        try
         {
-            if (_listenSocket != null)
-            {
-                throw new InvalidOperationException(SocketsStrings.TransportAlreadyBound);
-            }
+            listenSocket = _options.CreateBoundListenSocket(EndPoint);
+        }
+        catch (SocketException e) when (e.SocketErrorCode == SocketError.AddressAlreadyInUse)
+        {
+            throw new AddressInUseException(e.Message, e);
+        }
 
-            // Check if EndPoint is a FileHandleEndpoint before attempting to access EndPoint.AddressFamily
-            // since that will throw an NotImplementedException.
-            if (EndPoint is FileHandleEndPoint)
-            {
-                throw new NotSupportedException(SocketsStrings.FileHandleEndPointNotSupported);
-            }
+        Debug.Assert(listenSocket.LocalEndPoint != null);
+        EndPoint = listenSocket.LocalEndPoint;
 
-            Socket listenSocket;
+        listenSocket.Listen(_options.Backlog);
 
-            // Unix domain sockets are unspecified
-            var protocolType = EndPoint is UnixDomainSocketEndPoint ? ProtocolType.Unspecified : ProtocolType.Tcp;
+        _listenSocket = listenSocket;
+    }
 
-            listenSocket = new Socket(EndPoint.AddressFamily, SocketType.Stream, protocolType);
-
-            // Kestrel expects IPv6Any to bind to both IPv6 and IPv4
-            if (EndPoint is IPEndPoint ip && ip.Address == IPAddress.IPv6Any)
-            {
-                listenSocket.DualMode = true;
-            }
-
+    public async ValueTask<ConnectionContext?> AcceptAsync(CancellationToken cancellationToken = default)
+    {
+        while (true)
+        {
             try
             {
-                listenSocket.Bind(EndPoint);
+                Debug.Assert(_listenSocket != null, "Bind must be called first.");
+
+                var acceptSocket = await _listenSocket.AcceptAsync(cancellationToken);
+
+                // Only apply no delay to Tcp based endpoints
+                if (acceptSocket.LocalEndPoint is IPEndPoint)
+                {
+                    acceptSocket.NoDelay = _options.NoDelay;
+                }
+
+                return _factory.Create(acceptSocket);
             }
-            catch (SocketException e) when (e.SocketErrorCode == SocketError.AddressAlreadyInUse)
+            catch (ObjectDisposedException)
             {
-                throw new AddressInUseException(e.Message, e);
+                // A call was made to UnbindAsync/DisposeAsync just return null which signals we're done
+                return null;
             }
-
-            EndPoint = listenSocket.LocalEndPoint;
-
-            listenSocket.Listen(_options.Backlog);
-
-            _listenSocket = listenSocket;
-        }
-
-        public async ValueTask<ConnectionContext> AcceptAsync(CancellationToken cancellationToken = default)
-        {
-            while (true)
+            catch (SocketException e) when (e.SocketErrorCode == SocketError.OperationAborted)
             {
-                try
-                {
-                    var acceptSocket = await _listenSocket.AcceptAsync();
-
-                    // Only apply no delay to Tcp based endpoints
-                    if (acceptSocket.LocalEndPoint is IPEndPoint)
-                    {
-                        acceptSocket.NoDelay = _options.NoDelay;
-                    }
-
-                    var connection = new SocketConnection(acceptSocket, _memoryPool, _schedulers[_schedulerIndex], _trace,
-                        _options.MaxReadBufferSize, _options.MaxWriteBufferSize, _options.WaitForDataBeforeAllocatingBuffer);
-
-                    connection.Start();
-
-                    _schedulerIndex = (_schedulerIndex + 1) % _numSchedulers;
-
-                    return connection;
-                }
-                catch (ObjectDisposedException)
-                {
-                    // A call was made to UnbindAsync/DisposeAsync just return null which signals we're done
-                    return null;
-                }
-                catch (SocketException e) when (e.SocketErrorCode == SocketError.OperationAborted)
-                {
-                    // A call was made to UnbindAsync/DisposeAsync just return null which signals we're done
-                    return null;
-                }
-                catch (SocketException)
-                {
-                    // The connection got reset while it was in the backlog, so we try again.
-                    _trace.ConnectionReset(connectionId: "(null)");
-                }
+                // A call was made to UnbindAsync/DisposeAsync just return null which signals we're done
+                return null;
+            }
+            catch (SocketException)
+            {
+                // The connection got reset while it was in the backlog, so we try again.
+                SocketsLog.ConnectionReset(_logger, connectionId: "(null)");
             }
         }
+    }
 
-        public ValueTask UnbindAsync(CancellationToken cancellationToken = default)
-        {
-            _listenSocket?.Dispose();
-            return default;
-        }
+    public ValueTask UnbindAsync(CancellationToken cancellationToken = default)
+    {
+        _listenSocket?.Dispose();
+        return default;
+    }
 
-        public ValueTask DisposeAsync()
-        {
-            _listenSocket?.Dispose();
-            // Dispose the memory pool
-            _memoryPool.Dispose();
-            return default;
-        }
+    public ValueTask DisposeAsync()
+    {
+        _listenSocket?.Dispose();
+
+        _factory.Dispose();
+
+        return default;
     }
 }

@@ -1,5 +1,9 @@
-import { RenderBatch, ArrayRange, RenderTreeDiff, ArrayValues, RenderTreeEdit, EditType, FrameType, RenderTreeFrame, RenderTreeDiffReader, RenderTreeFrameReader, RenderTreeEditReader, ArrayRangeReader, ArrayBuilderSegmentReader, ArrayBuilderSegment } from './RenderBatch';
-import { decodeUtf8 } from './Utf8Decoder';
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+import { RenderBatch, ArrayRange, RenderTreeDiff, ArrayValues, RenderTreeEdit, RenderTreeFrame, RenderTreeDiffReader, RenderTreeFrameReader, RenderTreeEditReader, ArrayRangeReader, ArrayBuilderSegmentReader, ArrayBuilderSegment } from './RenderBatch';
+import { decodeUtf8 } from '../../Utf8Decoder';
+import { readInt32LE, readUint64LE, readLEB128, numLEB128Bytes } from '../../BinaryDecoder';
 
 const updatedComponentsEntryLength = 4; // Each is a single int32 giving the location of the data
 const referenceFramesEntryLength = 20; // 1 int for frame type, then 16 bytes for type-specific data
@@ -7,12 +11,16 @@ const disposedComponentIdsEntryLength = 4; // Each is an int32 giving the ID
 const disposedEventHandlerIdsEntryLength = 8; // Each is an int64 giving the ID
 const editsEntryLength = 16; // 4 ints
 const stringTableEntryLength = 4; // Each is an int32 giving the string data location, or -1 for null
-const uint64HighPartShift = Math.pow(2, 32);
-const maxSafeNumberHighPart = Math.pow(2, 21) - 1; // The high-order int32 from Number.MAX_SAFE_INTEGER
+
+interface OutOfProcessStringReaderInterface {
+  readString(index: number): string | null;
+}
 
 export class OutOfProcessRenderBatch implements RenderBatch {
-  constructor(private batchData: Uint8Array) {
-    const stringReader = new OutOfProcessStringReader(batchData);
+  constructor(private batchData: Uint8Array, useUtf16StringTable?: boolean) {
+    const stringReader = useUtf16StringTable
+      ? new OutOfProcessStringReaderUtf16(batchData)
+      : new OutOfProcessStringReader(batchData);
 
     this.arrayRangeReader = new OutOfProcessArrayRangeReader(batchData);
     this.arrayBuilderSegmentReader = new OutOfProcessArrayBuilderSegmentReader(batchData);
@@ -87,7 +95,7 @@ class OutOfProcessRenderTreeDiffReader implements RenderTreeDiffReader {
 }
 
 class OutOfProcessRenderTreeEditReader implements RenderTreeEditReader {
-  constructor(private batchDataUint8: Uint8Array, private stringReader: OutOfProcessStringReader) {
+  constructor(private batchDataUint8: Uint8Array, private stringReader: OutOfProcessStringReaderInterface) {
   }
 
   editType(edit: RenderTreeEdit) {
@@ -113,7 +121,7 @@ class OutOfProcessRenderTreeEditReader implements RenderTreeEditReader {
 }
 
 class OutOfProcessRenderTreeFrameReader implements RenderTreeFrameReader {
-  constructor(private batchDataUint8: Uint8Array, private stringReader: OutOfProcessStringReader) {
+  constructor(private batchDataUint8: Uint8Array, private stringReader: OutOfProcessStringReaderInterface) {
   }
 
   // For render frames, the 2nd-4th ints have different meanings depending on frameType.
@@ -194,6 +202,36 @@ class OutOfProcessStringReader {
   }
 }
 
+class OutOfProcessStringReaderUtf16 {
+  private static textDecoder: TextDecoder | undefined;
+  private stringTableStartIndex: number;
+
+  private static getTextDecoder(): TextDecoder {
+    return OutOfProcessStringReaderUtf16.textDecoder ??= new TextDecoder('utf-16le');
+  }
+
+  constructor(private batchDataUint8: Uint8Array) {
+    // Final int gives start position of the string table (same layout as UTF-8 variant)
+    this.stringTableStartIndex = readInt32LE(batchDataUint8, batchDataUint8.length - 4);
+  }
+
+  readString(index: number): string | null {
+    if (index === -1) { // Special value encodes 'null'
+      return null;
+    } else {
+      const stringTableEntryPos = readInt32LE(this.batchDataUint8, this.stringTableStartIndex + index * stringTableEntryLength);
+
+      // UTF-16LE format: [int32 charCount][UTF-16LE chars]
+      // Both C# and JS strings are natively UTF-16, so this avoids two transcoding passes.
+      const charCount = readInt32LE(this.batchDataUint8, stringTableEntryPos);
+      const charsStart = stringTableEntryPos + 4;
+      const byteLength = charCount * 2;
+      const utf16Bytes = new Uint8Array(this.batchDataUint8.buffer, this.batchDataUint8.byteOffset + charsStart, byteLength);
+      return OutOfProcessStringReaderUtf16.getTextDecoder().decode(utf16Bytes);
+    }
+  }
+}
+
 class OutOfProcessArrayRangeReader implements ArrayRangeReader {
   constructor(private batchDataUint8: Uint8Array) {
   }
@@ -213,7 +251,7 @@ class OutOfProcessArrayBuilderSegmentReader implements ArrayBuilderSegmentReader
   constructor(private batchDataUint8: Uint8Array) {
   }
 
-  offset<T>(arrayBuilderSegment: ArrayBuilderSegment<T>) {
+  offset<T>(_arrayBuilderSegment: ArrayBuilderSegment<T>): number {
     // Not used by the out-of-process representation of RenderBatch data.
     // This only exists on the ArrayBuilderSegmentReader for the shared-memory representation.
     return 0;
@@ -230,47 +268,4 @@ class OutOfProcessArrayBuilderSegmentReader implements ArrayBuilderSegmentReader
   }
 }
 
-function readInt32LE(buffer: Uint8Array, position: number): any {
-  return (buffer[position])
-    | (buffer[position + 1] << 8)
-    | (buffer[position + 2] << 16)
-    | (buffer[position + 3] << 24);
-}
 
-function readUint32LE(buffer: Uint8Array, position: number): any {
-  return (buffer[position])
-    + (buffer[position + 1] << 8)
-    + (buffer[position + 2] << 16)
-    + ((buffer[position + 3] << 24) >>> 0); // The >>> 0 coerces the value to unsigned
-}
-
-function readUint64LE(buffer: Uint8Array, position: number): any {
-  // This cannot be done using bit-shift operators in JavaScript, because
-  // those all implicitly convert to int32
-  const highPart = readUint32LE(buffer, position + 4);
-  if (highPart > maxSafeNumberHighPart) {
-    throw new Error(`Cannot read uint64 with high order part ${highPart}, because the result would exceed Number.MAX_SAFE_INTEGER.`);
-  }
-
-  return (highPart * uint64HighPartShift) + readUint32LE(buffer, position);
-}
-
-function readLEB128(buffer: Uint8Array, position: number) {
-  let result = 0;
-  let shift = 0;
-  for (let index = 0; index < 4; index++) {
-    const byte = buffer[position + index];
-    result |= (byte & 127) << shift;
-    if (byte < 128) {
-      break;
-    }
-    shift += 7;
-  }
-  return result;
-}
-
-function numLEB128Bytes(value: number) {
-  return value < 128 ? 1
-    : value < 16384 ? 2
-      : value < 2097152 ? 3 : 4;
-}

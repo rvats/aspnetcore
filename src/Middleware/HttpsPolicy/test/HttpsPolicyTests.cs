@@ -1,37 +1,35 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Linq;
-using System.Net;
 using System.Net.Http;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Net.Http.Headers;
-using Xunit;
 
-namespace Microsoft.AspNetCore.HttpsPolicy.Tests
+namespace Microsoft.AspNetCore.HttpsPolicy.Tests;
+
+public class HttpsPolicyTests
 {
-    public class HttpsPolicyTests
+    [Theory]
+    [InlineData(302, 443, 2592000, false, false, "max-age=2592000", "https://localhost/")]
+    [InlineData(301, 5050, 2592000, false, false, "max-age=2592000", "https://localhost:5050/")]
+    [InlineData(301, 443, 2592000, false, false, "max-age=2592000", "https://localhost/")]
+    [InlineData(301, 443, 2592000, true, false, "max-age=2592000; includeSubDomains", "https://localhost/")]
+    [InlineData(301, 443, 2592000, false, true, "max-age=2592000; preload", "https://localhost/")]
+    [InlineData(301, 443, 2592000, true, true, "max-age=2592000; includeSubDomains; preload", "https://localhost/")]
+    [InlineData(302, 5050, 2592000, true, true, "max-age=2592000; includeSubDomains; preload", "https://localhost:5050/")]
+    public async Task SetsBothHstsAndHttpsRedirection_RedirectOnFirstRequest_HstsOnSecondRequest(int statusCode, int? tlsPort, int maxAge, bool includeSubDomains, bool preload, string expectedHstsHeader, string expectedUrl)
     {
-        [Theory]
-        [InlineData(302, 443, 2592000, false, false, "max-age=2592000", "https://localhost/")]
-        [InlineData(301, 5050, 2592000, false, false, "max-age=2592000", "https://localhost:5050/")]
-        [InlineData(301, 443, 2592000, false, false, "max-age=2592000", "https://localhost/")]
-        [InlineData(301, 443, 2592000, true, false, "max-age=2592000; includeSubDomains", "https://localhost/")]
-        [InlineData(301, 443, 2592000, false, true, "max-age=2592000; preload", "https://localhost/")]
-        [InlineData(301, 443, 2592000, true, true, "max-age=2592000; includeSubDomains; preload", "https://localhost/")]
-        [InlineData(302, 5050, 2592000, true, true, "max-age=2592000; includeSubDomains; preload", "https://localhost:5050/")]
-        public async Task SetsBothHstsAndHttpsRedirection_RedirectOnFirstRequest_HstsOnSecondRequest(int statusCode, int? tlsPort, int maxAge, bool includeSubDomains, bool preload, string expectedHstsHeader, string expectedUrl)
-        {
-
-            var builder = new WebHostBuilder()
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .ConfigureServices(services =>
                 {
                     services.Configure<HttpsRedirectionOptions>(options =>
@@ -56,25 +54,26 @@ namespace Microsoft.AspNetCore.HttpsPolicy.Tests
                         return context.Response.WriteAsync("Hello world");
                     });
                 });
+            }).Build();
 
-            var featureCollection = new FeatureCollection();
-            featureCollection.Set<IServerAddressesFeature>(new ServerAddressesFeature());
-            var server = new TestServer(builder, featureCollection);
-            var client = server.CreateClient();
+        await host.StartAsync();
 
-            var request = new HttpRequestMessage(HttpMethod.Get, "");
+        var server = host.GetTestServer();
+        server.Features.Set<IServerAddressesFeature>(new ServerAddressesFeature());
+        var client = server.CreateClient();
 
-            var response = await client.SendAsync(request);
+        var request = new HttpRequestMessage(HttpMethod.Get, "");
 
-            Assert.Equal(statusCode, (int)response.StatusCode);
-            Assert.Equal(expectedUrl, response.Headers.Location.ToString());
+        var response = await client.SendAsync(request);
 
-            client = server.CreateClient();
-            client.BaseAddress = new Uri(response.Headers.Location.ToString());
-            request = new HttpRequestMessage(HttpMethod.Get, expectedUrl);
-            response = await client.SendAsync(request);
+        Assert.Equal(statusCode, (int)response.StatusCode);
+        Assert.Equal(expectedUrl, response.Headers.Location.ToString());
 
-            Assert.Equal(expectedHstsHeader, response.Headers.GetValues(HeaderNames.StrictTransportSecurity).FirstOrDefault());
-        }
+        client = server.CreateClient();
+        client.BaseAddress = new Uri(response.Headers.Location.ToString());
+        request = new HttpRequestMessage(HttpMethod.Get, expectedUrl);
+        response = await client.SendAsync(request);
+
+        Assert.Equal(expectedHstsHeader, response.Headers.GetValues(HeaderNames.StrictTransportSecurity).FirstOrDefault());
     }
 }

@@ -1,12 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.
 
 using System.Buffers;
-using System.Linq;
 using System.Collections.Generic;
-using System.Text;
+using System.Linq;
 using System.Net.Http.HPack;
+using System.Text;
 using Xunit;
 #if KESTREL
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
@@ -14,7 +13,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 
 namespace System.Net.Http.Unit.Tests.HPack
 {
-    public class HPackDecoderTests : IHttpHeadersHandler
+    public class HPackDecoderTests
     {
         private const int DynamicTableInitialMaxSize = 4096;
         private const int MaxHeaderFieldSize = 8192;
@@ -45,11 +44,14 @@ namespace System.Net.Http.Unit.Tests.HPack
 
         private const string _userAgentString = "user-agent";
 
-        private static readonly byte[] _userAgentBytes = Encoding.ASCII.GetBytes(_userAgentString);
-
         private const string _headerNameString = "new-header";
 
+        // On purpose longer than 4096 (DefaultStringOctetsSize from HPackDecoder) to trigger https://github.com/dotnet/runtime/issues/78516
+        private static readonly string _literalHeaderNameString = string.Concat(Enumerable.Range(0, 4100).Select(c => (char)('a' + (c % 26))));
+
         private static readonly byte[] _headerNameBytes = Encoding.ASCII.GetBytes(_headerNameString);
+
+        private static readonly byte[] _literalHeaderNameBytes = Encoding.ASCII.GetBytes(_literalHeaderNameString);
 
         // n     e     w       -      h     e     a     d     e     r      *
         // 10101000 10111110 00010110 10011100 10100011 10010000 10110110 01111111
@@ -67,6 +69,12 @@ namespace System.Net.Http.Unit.Tests.HPack
             .Concat(_headerNameBytes)
             .ToArray();
 
+        // size = 4096 ==> 0x7f, 0x81, 0x1f (7+) prefixed integer
+        // size = 4100 ==> 0x7f, 0x85, 0x1f (7+) prefixed integer
+        private static readonly byte[] _literalHeaderName = new byte[] { 0x7f, 0x85, 0x1f } // 4100
+            .Concat(_literalHeaderNameBytes)
+            .ToArray();
+
         private static readonly byte[] _headerNameHuffman = new byte[] { (byte)(0x80 | _headerNameHuffmanBytes.Length) }
             .Concat(_headerNameHuffmanBytes)
             .ToArray();
@@ -79,6 +87,10 @@ namespace System.Net.Http.Unit.Tests.HPack
             .Concat(_headerValueHuffmanBytes)
             .ToArray();
 
+        private static readonly byte[] _literalEmptyString = new byte[] { 0x00 };
+
+        private static readonly byte[] _literalEmptyStringHuffman = new byte[] { 0x80 };
+
         // &        *
         // 11111000 11111111
         private static readonly byte[] _huffmanLongPadding = new byte[] { 0x82, 0xf8, 0xff };
@@ -89,42 +101,66 @@ namespace System.Net.Http.Unit.Tests.HPack
 
         private readonly DynamicTable _dynamicTable;
         private readonly HPackDecoder _decoder;
-
-        private readonly Dictionary<string, string> _decodedHeaders = new Dictionary<string, string>();
+        private readonly TestHttpHeadersHandler _handler = new TestHttpHeadersHandler();
 
         public HPackDecoderTests()
         {
-            _dynamicTable = new DynamicTable(DynamicTableInitialMaxSize);
-            _decoder = new HPackDecoder(DynamicTableInitialMaxSize, MaxHeaderFieldSize, _dynamicTable);
+            (_dynamicTable, _decoder) = CreateDecoderAndTable();
         }
 
-        void IHttpHeadersHandler.OnHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
+        private static (DynamicTable, HPackDecoder) CreateDecoderAndTable()
         {
-            string headerName = Encoding.ASCII.GetString(name);
-            string headerValue = Encoding.ASCII.GetString(value);
+            var dynamicTable = new DynamicTable(DynamicTableInitialMaxSize);
+            var decoder = new HPackDecoder(DynamicTableInitialMaxSize, MaxHeaderFieldSize, dynamicTable);
 
-            _decodedHeaders[headerName] = headerValue;
+            return (dynamicTable, decoder);
         }
-
-        void IHttpHeadersHandler.OnStaticIndexedHeader(int index)
-        {
-            // Not yet implemented for HPACK.
-            throw new NotImplementedException();
-        }
-
-        void IHttpHeadersHandler.OnStaticIndexedHeader(int index, ReadOnlySpan<byte> value)
-        {
-            // Not yet implemented for HPACK.
-            throw new NotImplementedException();
-        }
-
-        void IHttpHeadersHandler.OnHeadersComplete(bool endStream) { }
 
         [Fact]
-        public void DecodesIndexedHeaderField_StaticTable()
+        public void DecodesIndexedHeaderField_StaticTableWithValue()
         {
-            _decoder.Decode(_indexedHeaderStatic, endHeaders: true, handler: this);
-            Assert.Equal("GET", _decodedHeaders[":method"]);
+            _decoder.Decode(_indexedHeaderStatic, endHeaders: true, handler: _handler);
+            Assert.Equal("GET", _handler.DecodedHeaders[":method"]);
+
+            Assert.Equal(":method", _handler.DecodedStaticHeaders[H2StaticTable.MethodGet].Key);
+            Assert.Equal("GET", _handler.DecodedStaticHeaders[H2StaticTable.MethodGet].Value);
+        }
+
+        [Fact]
+        public void DecodesIndexedHeaderField_ZeroIndex_Error()
+        {
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() =>
+                _decoder.Decode(new byte[] { 0x80 }, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_hpack_invalid_index, 0), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
+            Assert.Empty(_handler.DecodedStaticHeaders);
+        }
+
+        [Theory]
+        [InlineData(0x81, 1, ":authority")]
+        [InlineData(0xbd, 61, "www-authenticate")]
+        public void DecodesIndexedHeaderField_StaticTableBoundaries(byte encoded, int index, string expectedHeaderName)
+        {
+            _decoder.Decode(new byte[] { encoded }, endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.Equal("", _handler.DecodedHeaders[expectedHeaderName]);
+            Assert.Single(_handler.DecodedStaticHeaders);
+            Assert.Equal(new KeyValuePair<string, string>(expectedHeaderName, ""), _handler.DecodedStaticHeaders[index]);
+        }
+
+        [Fact]
+        public void DecodesIndexedHeaderField_StaticTableWithoutValue()
+        {
+            byte[] encoded = _literalHeaderFieldWithIndexingIndexedName
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded, endHeaders: true, handler: _handler);
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_userAgentString]);
+
+            Assert.Equal(_userAgentString, _handler.DecodedStaticHeaders[H2StaticTable.UserAgent].Key);
+            Assert.Equal(_headerValueString, _handler.DecodedStaticHeaders[H2StaticTable.UserAgent].Value);
         }
 
         [Fact]
@@ -134,17 +170,36 @@ namespace System.Net.Http.Unit.Tests.HPack
             _dynamicTable.Insert(_headerNameBytes, _headerValueBytes);
 
             // Index it
-            _decoder.Decode(_indexedHeaderDynamic, endHeaders: true, handler: this);
-            Assert.Equal(_headerValueString, _decodedHeaders[_headerNameString]);
+            _decoder.Decode(_indexedHeaderDynamic, endHeaders: true, handler: _handler);
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_headerNameString]);
+        }
+
+        [Fact]
+        public void DecodesIndexedHeaderField_DynamicTable_ReferencedEntryRemovedOnInsertion()
+        {
+            // Pre-populate the dynamic table so we'll have something to reference.
+            // This entry will have index 62 (0x3E).
+            _dynamicTable.Insert(_headerNameBytes, _headerValueBytes);
+            Assert.Equal(1, _dynamicTable.Count);
+
+            Assert.InRange(_dynamicTable.MaxSize, 1, _literalHeaderNameBytes.Length); // Assert that our string will be too big
+
+            byte[] encoded = (new byte[] { 0x40 | 0x3E }) // Indexing enabled (0x40) | dynamic table (62 = 0x3E) as a 6-integer, 
+                .Concat(_literalHeaderName) // A header value that's too large to fit in the dynamic table
+                .ToArray();
+
+            _decoder.Decode(encoded, endHeaders: true, handler: _handler);
+            Assert.Equal(0, _dynamicTable.Count); // The large entry caused the table to be wiped
+            Assert.Equal(_literalHeaderNameString, _handler.DecodedHeaders[_headerNameString]); // but we got the header anyway
         }
 
         [Fact]
         public void DecodesIndexedHeaderField_OutOfRange_Error()
         {
             HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() =>
-                _decoder.Decode(_indexedHeaderDynamic, endHeaders: true, handler: this));
+                _decoder.Decode(_indexedHeaderDynamic, endHeaders: true, handler: _handler));
             Assert.Equal(SR.Format(SR.net_http_hpack_invalid_index, 62), exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -218,9 +273,9 @@ namespace System.Net.Http.Unit.Tests.HPack
             // 11 1110 (Indexed Name - Index 62 encoded with 6-bit prefix - see http://httpwg.org/specs/rfc7541.html#integer.representation)
             // Index 62 is the first entry in the dynamic table. If there's nothing there, the decoder should throw.
 
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(new byte[] { 0x7e }, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(new byte[] { 0x7e }, endHeaders: true, handler: _handler));
             Assert.Equal(SR.Format(SR.net_http_hpack_invalid_index, 62), exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -235,6 +290,43 @@ namespace System.Net.Http.Unit.Tests.HPack
         }
 
         [Fact]
+        public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_EmptyName()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalEmptyString)
+                .Concat(_headerValue)
+                .ToArray();
+
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_invalid_header_name, string.Empty), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_EmptyValue()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_headerName)
+                .Concat(_literalEmptyString)
+                .ToArray();
+
+            TestDecodeWithoutIndexing(encoded, _headerNameString, string.Empty);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_EmptyNameAndValue()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalEmptyString)
+                .Concat(_literalEmptyString)
+                .ToArray();
+
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_invalid_header_name, string.Empty), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
+        }
+
+        [Fact]
         public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_HuffmanEncodedName()
         {
             byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
@@ -243,6 +335,19 @@ namespace System.Net.Http.Unit.Tests.HPack
                 .ToArray();
 
             TestDecodeWithoutIndexing(encoded, _headerNameString, _headerValueString);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_HuffmanEncodedName_Empty()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalEmptyStringHuffman)
+                .Concat(_headerValue)
+                .ToArray();
+
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_invalid_header_name, string.Empty), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -257,6 +362,17 @@ namespace System.Net.Http.Unit.Tests.HPack
         }
 
         [Fact]
+        public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_HuffmanEncodedValue_Empty()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_headerName)
+                .Concat(_literalEmptyStringHuffman)
+                .ToArray();
+
+            TestDecodeWithoutIndexing(encoded, _headerNameString, string.Empty);
+        }
+
+        [Fact]
         public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_HuffmanEncodedNameAndValue()
         {
             byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
@@ -265,6 +381,19 @@ namespace System.Net.Http.Unit.Tests.HPack
                 .ToArray();
 
             TestDecodeWithoutIndexing(encoded, _headerNameString, _headerValueString);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldWithoutIndexing_NewName_HuffmanEncodedNameAndValue_Empty()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalEmptyStringHuffman)
+                .Concat(_literalEmptyStringHuffman)
+                .ToArray();
+
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_invalid_header_name, string.Empty), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -294,9 +423,9 @@ namespace System.Net.Http.Unit.Tests.HPack
             // 1111 0010 1111 (Indexed Name - Index 62 encoded with 4-bit prefix - see http://httpwg.org/specs/rfc7541.html#integer.representation)
             // Index 62 is the first entry in the dynamic table. If there's nothing there, the decoder should throw.
 
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(new byte[] { 0x0f, 0x2f }, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(new byte[] { 0x0f, 0x2f }, endHeaders: true, handler: _handler));
             Assert.Equal(SR.Format(SR.net_http_hpack_invalid_index, 62), exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -306,6 +435,19 @@ namespace System.Net.Http.Unit.Tests.HPack
                 .Concat(_headerName)
                 .Concat(_headerValue)
                 .ToArray();
+
+            TestDecodeWithoutIndexing(encoded, _headerNameString, _headerValueString);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_Duplicated()
+        {
+            byte[] encoded = _literalHeaderFieldNeverIndexedNewName
+                .Concat(_headerName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            encoded = encoded.Concat(encoded).ToArray();
 
             TestDecodeWithoutIndexing(encoded, _headerNameString, _headerValueString);
         }
@@ -376,9 +518,104 @@ namespace System.Net.Http.Unit.Tests.HPack
             // 1111 0010 1111 (Indexed Name - Index 62 encoded with 4-bit prefix - see http://httpwg.org/specs/rfc7541.html#integer.representation)
             // Index 62 is the first entry in the dynamic table. If there's nothing there, the decoder should throw.
 
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(new byte[] { 0x1f, 0x2f }, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(new byte[] { 0x1f, 0x2f }, endHeaders: true, handler: _handler));
             Assert.Equal(SR.Format(SR.net_http_hpack_invalid_index, 62), exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_SingleBuffer()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalHeaderName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded, endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.True(_handler.DecodedHeaders.ContainsKey(_literalHeaderNameString));
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_literalHeaderNameString]);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_NameLengthBrokenIntoSeparateBuffers()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalHeaderName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded[..1], endHeaders: false, handler: _handler);
+            _decoder.Decode(encoded[1..], endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.True(_handler.DecodedHeaders.ContainsKey(_literalHeaderNameString));
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_literalHeaderNameString]);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_NameBrokenIntoSeparateBuffers()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalHeaderName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded[..(_literalHeaderNameString.Length / 2)], endHeaders: false, handler: _handler);
+            _decoder.Decode(encoded[(_literalHeaderNameString.Length / 2)..], endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.True(_handler.DecodedHeaders.ContainsKey(_literalHeaderNameString));
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_literalHeaderNameString]);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_NameAndValueBrokenIntoSeparateBuffers()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalHeaderName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded[..^_headerValue.Length], endHeaders: false, handler: _handler);
+            _decoder.Decode(encoded[^_headerValue.Length..], endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.True(_handler.DecodedHeaders.ContainsKey(_literalHeaderNameString));
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_literalHeaderNameString]);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_ValueLengthBrokenIntoSeparateBuffers()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalHeaderName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded[..^(_headerValue.Length - 1)], endHeaders: false, handler: _handler);
+            _decoder.Decode(encoded[^(_headerValue.Length - 1)..], endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.True(_handler.DecodedHeaders.ContainsKey(_literalHeaderNameString));
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_literalHeaderNameString]);
+        }
+
+        [Fact]
+        public void DecodesLiteralHeaderFieldNeverIndexed_NewName_ValueBrokenIntoSeparateBuffers()
+        {
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(_literalHeaderName)
+                .Concat(_headerValue)
+                .ToArray();
+
+            _decoder.Decode(encoded[..^(_headerValueString.Length / 2)], endHeaders: false, handler: _handler);
+            _decoder.Decode(encoded[^(_headerValueString.Length / 2)..], endHeaders: true, handler: _handler);
+
+            Assert.Single(_handler.DecodedHeaders);
+            Assert.True(_handler.DecodedHeaders.ContainsKey(_literalHeaderNameString));
+            Assert.Equal(_headerValueString, _handler.DecodedHeaders[_literalHeaderNameString]);
         }
 
         [Fact]
@@ -389,10 +626,10 @@ namespace System.Net.Http.Unit.Tests.HPack
 
             Assert.Equal(DynamicTableInitialMaxSize, _dynamicTable.MaxSize);
 
-            _decoder.Decode(new byte[] { 0x3e }, endHeaders: true, handler: this);
+            _decoder.Decode(new byte[] { 0x3e }, endHeaders: true, handler: _handler);
 
             Assert.Equal(30, _dynamicTable.MaxSize);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -404,7 +641,7 @@ namespace System.Net.Http.Unit.Tests.HPack
             Assert.Equal(DynamicTableInitialMaxSize, _dynamicTable.MaxSize);
 
             byte[] data = _indexedHeaderStatic.Concat(new byte[] { 0x3e }).ToArray();
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(data, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(data, endHeaders: true, handler: _handler));
             Assert.Equal(SR.net_http_hpack_late_dynamic_table_size_update, exception.Message);
         }
 
@@ -413,13 +650,13 @@ namespace System.Net.Http.Unit.Tests.HPack
         {
             Assert.Equal(DynamicTableInitialMaxSize, _dynamicTable.MaxSize);
 
-            _decoder.Decode(_indexedHeaderStatic, endHeaders: false, handler: this);
-            Assert.Equal("GET", _decodedHeaders[":method"]);
+            _decoder.Decode(_indexedHeaderStatic, endHeaders: false, handler: _handler);
+            Assert.Equal("GET", _handler.DecodedHeaders[":method"]);
 
             // 001   (Dynamic Table Size Update)
             // 11110 (30 encoded with 5-bit prefix - see http://httpwg.org/specs/rfc7541.html#integer.representation)
             byte[] data = new byte[] { 0x3e };
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(data, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(data, endHeaders: true, handler: _handler));
             Assert.Equal(SR.net_http_hpack_late_dynamic_table_size_update, exception.Message);
         }
 
@@ -428,12 +665,12 @@ namespace System.Net.Http.Unit.Tests.HPack
         {
             Assert.Equal(DynamicTableInitialMaxSize, _dynamicTable.MaxSize);
 
-            _decoder.Decode(_indexedHeaderStatic, endHeaders: true, handler: this);
-            Assert.Equal("GET", _decodedHeaders[":method"]);
+            _decoder.Decode(_indexedHeaderStatic, endHeaders: true, handler: _handler);
+            Assert.Equal("GET", _handler.DecodedHeaders[":method"]);
 
             // 001   (Dynamic Table Size Update)
             // 11110 (30 encoded with 5-bit prefix - see http://httpwg.org/specs/rfc7541.html#integer.representation)
-            _decoder.Decode(new byte[] { 0x3e }, endHeaders: true, handler: this);
+            _decoder.Decode(new byte[] { 0x3e }, endHeaders: true, handler: _handler);
 
             Assert.Equal(30, _dynamicTable.MaxSize);
         }
@@ -447,9 +684,9 @@ namespace System.Net.Http.Unit.Tests.HPack
             Assert.Equal(DynamicTableInitialMaxSize, _dynamicTable.MaxSize);
 
             HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() =>
-                _decoder.Decode(new byte[] { 0x3f, 0xe2, 0x1f }, endHeaders: true, handler: this));
+                _decoder.Decode(new byte[] { 0x3f, 0xe2, 0x1f }, endHeaders: true, handler: _handler));
             Assert.Equal(SR.Format(SR.net_http_hpack_large_table_size_update, 4097, DynamicTableInitialMaxSize), exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -459,9 +696,48 @@ namespace System.Net.Http.Unit.Tests.HPack
                 .Concat(new byte[] { 0xff, 0x82, 0x3f }) // 8193 encoded with 7-bit prefix
                 .ToArray();
 
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
             Assert.Equal(SR.Format(SR.net_http_headers_exceeded_length, MaxHeaderFieldSize), exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
+        }
+
+        [Fact]
+        public void HuffmanDecodedHeaderName_ExceedsLimitAfterDecoding_Throws()
+        {
+            // '0' (ASCII 48) has a 5-bit Huffman code (00000).
+            // 16 '0' characters = 80 Huffman bits = 10 encoded bytes, but decodes to 16 bytes.
+            // Encoded length (10) passes the pre-decode check (<= 10), but decoded length (16) exceeds the limit.
+            HPackDecoder decoder = new HPackDecoder(DynamicTableInitialMaxSize, maxHeadersLength: 10);
+
+            byte[] encoded = [
+                0x00,       // Literal header field without indexing, new name
+                0x8a,       // Huffman flag set (0x80) + string length 10 (7-bit prefix)
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 10 bytes Huffman -> 16 '0' chars
+                0x01,       // String length = 1 (no Huffman)
+                0x61        // Value = "a"
+            ];
+
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_headers_exceeded_length, 10), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
+        }
+
+        [Fact]
+        public void HuffmanDecodedHeaderValue_ExceedsLimitAfterDecoding_Throws()
+        {
+            HPackDecoder decoder = new HPackDecoder(DynamicTableInitialMaxSize, maxHeadersLength: 10);
+
+            byte[] encoded = [
+                0x00,       // Literal header field without indexing, new name
+                0x01,       // String length = 1 (no Huffman)
+                0x61,       // Name = "a"
+                0x8a,       // Huffman flag set (0x80) + string length 10 (7-bit prefix)
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // 10 bytes Huffman -> 16 '0' chars
+            ];
+
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_headers_exceeded_length, 10), exception.Message);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         [Fact]
@@ -477,9 +753,92 @@ namespace System.Net.Http.Unit.Tests.HPack
                 .Concat(Encoding.ASCII.GetBytes(string8193))
                 .ToArray();
 
-            decoder.Decode(encoded, endHeaders: true, handler: this);
+            decoder.Decode(encoded, endHeaders: true, handler: _handler);
 
-            Assert.Equal(string8193, _decodedHeaders[string8193]);
+            Assert.Equal(string8193, _handler.DecodedHeaders[string8193]);
+        }
+
+        [Fact]
+        public void DecodesStringLength_ExceedsLimit_Throws()
+        {
+            HPackDecoder decoder = new HPackDecoder(DynamicTableInitialMaxSize, MaxHeaderFieldSize + 1);
+            string string8191 = new string('a', MaxHeaderFieldSize - 1);
+            string string8193 = new string('a', MaxHeaderFieldSize + 1);
+            string string8194 = new string('a', MaxHeaderFieldSize + 2);
+
+            var bytes = new byte[3];
+            var success = IntegerEncoder.Encode(8194, 7, bytes, out var written);
+
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(new byte[] { 0x7f, 0x80, 0x3f }) // 8191 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8191))
+                .Concat(new byte[] { 0x7f, 0x80, 0x3f }) // 8191 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8191))
+                .Concat(_literalHeaderFieldWithoutIndexingNewName)
+                .Concat(new byte[] { 0x7f, 0x82, 0x3f }) // 8193 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8193))
+                .Concat(new byte[] { 0x7f, 0x82, 0x3f }) // 8193 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8193))
+                .Concat(_literalHeaderFieldWithoutIndexingNewName)
+                .Concat(new byte[] { 0x7f, 0x83, 0x3f }) // 8194 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8194))
+                .Concat(new byte[] { 0x7f, 0x83, 0x3f }) // 8194 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8194))
+                .ToArray();
+
+            var ex = Assert.Throws<HPackDecodingException>(() => decoder.Decode(encoded, endHeaders: true, handler: _handler));
+            Assert.Equal(SR.Format(SR.net_http_headers_exceeded_length, MaxHeaderFieldSize + 1), ex.Message);
+            Assert.Equal(string8191, _handler.DecodedHeaders[string8191]);
+            Assert.Equal(string8193, _handler.DecodedHeaders[string8193]);
+            Assert.False(_handler.DecodedHeaders.ContainsKey(string8194));
+        }
+
+        [Fact]
+        public void DecodesStringLength_IndividualBytes()
+        {
+            HPackDecoder decoder = new HPackDecoder(DynamicTableInitialMaxSize, MaxHeaderFieldSize + 1);
+            string string8193 = new string('a', MaxHeaderFieldSize + 1);
+
+            byte[] encoded = _literalHeaderFieldWithoutIndexingNewName
+                .Concat(new byte[] { 0x7f, 0x82, 0x3f }) // 8193 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8193))
+                .Concat(new byte[] { 0x7f, 0x82, 0x3f }) // 8193 encoded with 7-bit prefix, no Huffman encoding
+                .Concat(Encoding.ASCII.GetBytes(string8193))
+                .ToArray();
+
+            for (int i = 0; i < encoded.Length; i++)
+            {
+                bool end = i + 1 == encoded.Length;
+
+                decoder.Decode(new byte[] { encoded[i] }, endHeaders: end, handler: _handler);
+            }
+
+            Assert.Equal(string8193, _handler.DecodedHeaders[string8193]);
+        }
+
+        [Fact]
+        public void DecodesHeaderNameAndValue_SeparateSegments()
+        {
+            HPackDecoder decoder = new HPackDecoder(DynamicTableInitialMaxSize, MaxHeaderFieldSize + 1);
+            string string8193 = new string('a', MaxHeaderFieldSize + 1);
+
+            byte[][] segments = new byte[][]
+            {
+                _literalHeaderFieldWithoutIndexingNewName,
+                new byte[] { 0x7f, 0x82, 0x3f }, // 8193 encoded with 7-bit prefix, no Huffman encoding
+                Encoding.ASCII.GetBytes(string8193),
+                new byte[] { 0x7f, 0x82, 0x3f }, // 8193 encoded with 7-bit prefix, no Huffman encoding
+                Encoding.ASCII.GetBytes(string8193)
+            };
+
+            for (int i = 0; i < segments.Length; i++)
+            {
+                bool end = i + 1 == segments.Length;
+
+                decoder.Decode(segments[i], endHeaders: end, handler: _handler);
+            }
+
+            Assert.Equal(string8193, _handler.DecodedHeaders[string8193]);
         }
 
         public static readonly TheoryData<byte[]> _incompleteHeaderBlockData = new TheoryData<byte[]>
@@ -567,9 +926,9 @@ namespace System.Net.Http.Unit.Tests.HPack
         [MemberData(nameof(_incompleteHeaderBlockData))]
         public void DecodesIncompleteHeaderBlock_Error(byte[] encoded)
         {
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
             Assert.Equal(SR.net_http_hpack_incomplete_header_block, exception.Message);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
         public static readonly TheoryData<byte[]> _huffmanDecodingErrorData = new TheoryData<byte[]>
@@ -601,43 +960,100 @@ namespace System.Net.Http.Unit.Tests.HPack
         [MemberData(nameof(_huffmanDecodingErrorData))]
         public void WrapsHuffmanDecodingExceptionInHPackDecodingException(byte[] encoded)
         {
-            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: this));
+            HPackDecodingException exception = Assert.Throws<HPackDecodingException>(() => _decoder.Decode(encoded, endHeaders: true, handler: _handler));
             Assert.Equal(SR.net_http_hpack_huffman_decode_failed, exception.Message);
             Assert.IsType<HuffmanDecodingException>(exception.InnerException);
-            Assert.Empty(_decodedHeaders);
+            Assert.Empty(_handler.DecodedHeaders);
         }
 
-        private void TestDecodeWithIndexing(byte[] encoded, string expectedHeaderName, string expectedHeaderValue)
+        private static void TestDecodeWithIndexing(byte[] encoded, string expectedHeaderName, string expectedHeaderValue)
         {
-            TestDecode(encoded, expectedHeaderName, expectedHeaderValue, expectDynamicTableEntry: true);
+            TestDecode(encoded, expectedHeaderName, expectedHeaderValue, expectDynamicTableEntry: true, byteAtATime: false);
+            TestDecode(encoded, expectedHeaderName, expectedHeaderValue, expectDynamicTableEntry: true, byteAtATime: true);
         }
 
-        private void TestDecodeWithoutIndexing(byte[] encoded, string expectedHeaderName, string expectedHeaderValue)
+        private static void TestDecodeWithoutIndexing(byte[] encoded, string expectedHeaderName, string expectedHeaderValue)
         {
-            TestDecode(encoded, expectedHeaderName, expectedHeaderValue, expectDynamicTableEntry: false);
+            TestDecode(encoded, expectedHeaderName, expectedHeaderValue, expectDynamicTableEntry: false, byteAtATime: false);
+            TestDecode(encoded, expectedHeaderName, expectedHeaderValue, expectDynamicTableEntry: false, byteAtATime: true);
         }
 
-        private void TestDecode(byte[] encoded, string expectedHeaderName, string expectedHeaderValue, bool expectDynamicTableEntry)
+        private static void TestDecode(byte[] encoded, string expectedHeaderName, string expectedHeaderValue, bool expectDynamicTableEntry, bool byteAtATime)
         {
-            Assert.Equal(0, _dynamicTable.Count);
-            Assert.Equal(0, _dynamicTable.Size);
+            var (dynamicTable, decoder) = CreateDecoderAndTable();
+            var handler = new TestHttpHeadersHandler();
 
-            _decoder.Decode(encoded, endHeaders: true, handler: this);
+            Assert.Equal(0, dynamicTable.Count);
+            Assert.Equal(0, dynamicTable.Size);
 
-            Assert.Equal(expectedHeaderValue, _decodedHeaders[expectedHeaderName]);
-
-            if (expectDynamicTableEntry)
+            if (!byteAtATime)
             {
-                Assert.Equal(1, _dynamicTable.Count);
-                Assert.Equal(expectedHeaderName, Encoding.ASCII.GetString(_dynamicTable[0].Name));
-                Assert.Equal(expectedHeaderValue, Encoding.ASCII.GetString(_dynamicTable[0].Value));
-                Assert.Equal(expectedHeaderName.Length + expectedHeaderValue.Length + 32, _dynamicTable.Size);
+                decoder.Decode(encoded, endHeaders: true, handler: handler);
             }
             else
             {
-                Assert.Equal(0, _dynamicTable.Count);
-                Assert.Equal(0, _dynamicTable.Size);
+                // Parse data in 1 byte chunks, separated by empty chunks
+                for (int i = 0; i < encoded.Length; i++)
+                {
+                    bool end = i + 1 == encoded.Length;
+
+                    decoder.Decode(Array.Empty<byte>(), endHeaders: false, handler: handler);
+                    decoder.Decode(new byte[] { encoded[i] }, endHeaders: end, handler: handler);
+                }
             }
+
+            Assert.Equal(expectedHeaderValue, handler.DecodedHeaders[expectedHeaderName]);
+
+            if (expectDynamicTableEntry)
+            {
+                Assert.Equal(1, dynamicTable.Count);
+                Assert.Equal(expectedHeaderName, Encoding.ASCII.GetString(dynamicTable[0].Name));
+                Assert.Equal(expectedHeaderValue, Encoding.ASCII.GetString(dynamicTable[0].Value));
+                Assert.Equal(expectedHeaderName.Length + expectedHeaderValue.Length + 32, dynamicTable.Size);
+            }
+            else
+            {
+                Assert.Equal(0, dynamicTable.Count);
+                Assert.Equal(0, dynamicTable.Size);
+            }
+        }
+    }
+
+    public class TestHttpHeadersHandler : IHttpStreamHeadersHandler
+    {
+        public Dictionary<string, string> DecodedHeaders { get; } = new Dictionary<string, string>();
+        public Dictionary<int, KeyValuePair<string, string>> DecodedStaticHeaders { get; } = new Dictionary<int, KeyValuePair<string, string>>();
+
+        void IHttpStreamHeadersHandler.OnHeader(ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
+        {
+            string headerName = Encoding.ASCII.GetString(name);
+            string headerValue = Encoding.ASCII.GetString(value);
+
+            DecodedHeaders[headerName] = headerValue;
+        }
+
+        void IHttpStreamHeadersHandler.OnStaticIndexedHeader(int index)
+        {
+            ref readonly HeaderField entry = ref H2StaticTable.Get(index - 1);
+            ((IHttpStreamHeadersHandler)this).OnHeader(entry.Name, entry.Value);
+            DecodedStaticHeaders[index] = new KeyValuePair<string, string>(Encoding.ASCII.GetString(entry.Name), Encoding.ASCII.GetString(entry.Value));
+        }
+
+        void IHttpStreamHeadersHandler.OnStaticIndexedHeader(int index, ReadOnlySpan<byte> value)
+        {
+            byte[] name = H2StaticTable.Get(index - 1).Name;
+            ((IHttpStreamHeadersHandler)this).OnHeader(name, value);
+            DecodedStaticHeaders[index] = new KeyValuePair<string, string>(Encoding.ASCII.GetString(name), Encoding.ASCII.GetString(value));
+        }
+
+        void IHttpStreamHeadersHandler.OnHeadersComplete(bool endStream) { }
+
+        void IHttpStreamHeadersHandler.OnDynamicIndexedHeader(int? index, ReadOnlySpan<byte> name, ReadOnlySpan<byte> value)
+        {
+            string headerName = Encoding.ASCII.GetString(name);
+            string headerValue = Encoding.ASCII.GetString(value);
+
+            DecodedHeaders[headerName] = headerValue;
         }
     }
 }

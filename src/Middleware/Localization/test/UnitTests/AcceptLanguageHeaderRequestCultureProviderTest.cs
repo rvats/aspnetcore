@@ -1,23 +1,25 @@
-// Copyright (c) .NET Foundation. All rights reserved. 
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Collections.Generic;
 using System.Globalization;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.AspNetCore.TestHost;
-using Xunit;
+using Microsoft.Extensions.Hosting;
 
-namespace Microsoft.Extensions.Localization
+namespace Microsoft.Extensions.Localization;
+
+public class AcceptLanguageHeaderRequestCultureProviderTest
 {
-    public class AcceptLanguageHeaderRequestCultureProviderTest
+    [Fact]
+    public async Task GetFallbackLanguage_ReturnsFirstNonNullCultureFromSupportedCultureList()
     {
-        [Fact]
-        public async Task GetFallbackLanguage_ReturnsFirstNonNullCultureFromSupportedCultureList()
-        {
-            var builder = new WebHostBuilder()
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     app.UseRequestLocalization(new RequestLocalizationOptions
@@ -25,8 +27,8 @@ namespace Microsoft.Extensions.Localization
                         DefaultRequestCulture = new RequestCulture("en-US"),
                         SupportedCultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar-SA"),
-                            new CultureInfo("en-US")
+                                new CultureInfo("ar-SA"),
+                                new CultureInfo("en-US")
                         }
                     });
                     app.Run(context =>
@@ -37,21 +39,28 @@ namespace Microsoft.Extensions.Localization
                         return Task.FromResult(0);
                     });
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("jp,ar-SA,en-US");
-                var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
-                var response = await client.GetAsync(string.Empty);
-                Assert.Equal(3, count);
-            }
-        }
+        await host.StartAsync();
 
-        [Fact]
-        public async Task GetFallbackLanguage_ReturnsFromSupportedCulture_AcceptLanguageListContainsSupportedCultures()
+        using (var server = host.GetTestServer())
         {
-            var builder = new WebHostBuilder()
+            var client = server.CreateClient();
+            client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("jp,ar-SA,en-US");
+            var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
+            var response = await client.GetAsync(string.Empty);
+            Assert.Equal(3, count);
+        }
+    }
+
+    [Fact]
+    public async Task GetFallbackLanguage_ReturnsFromSupportedCulture_AcceptLanguageListContainsSupportedCultures()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     app.UseRequestLocalization(new RequestLocalizationOptions
@@ -59,8 +68,8 @@ namespace Microsoft.Extensions.Localization
                         DefaultRequestCulture = new RequestCulture("fr-FR"),
                         SupportedCultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar-SA"),
-                            new CultureInfo("en-US")
+                                new CultureInfo("ar-SA"),
+                                new CultureInfo("en-US")
                         }
                     });
                     app.Run(context =>
@@ -71,20 +80,27 @@ namespace Microsoft.Extensions.Localization
                         return Task.FromResult(0);
                     });
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-GB,ar-SA,en-US");
-                var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
-                var response = await client.GetAsync(string.Empty);
-            }
-        }
+        await host.StartAsync();
 
-        [Fact]
-        public async Task GetFallbackLanguage_ReturnsDefault_AcceptLanguageListDoesnotContainSupportedCultures()
+        using (var server = host.GetTestServer())
         {
-            var builder = new WebHostBuilder()
+            var client = server.CreateClient();
+            client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-GB,ar-SA,en-US");
+            var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
+            var response = await client.GetAsync(string.Empty);
+        }
+    }
+
+    [Fact]
+    public async Task GetFallbackLanguage_ReturnsDefault_AcceptLanguageListDoesnotContainSupportedCultures()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     app.UseRequestLocalization(new RequestLocalizationOptions
@@ -92,8 +108,8 @@ namespace Microsoft.Extensions.Localization
                         DefaultRequestCulture = new RequestCulture("fr-FR"),
                         SupportedCultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar-SA"),
-                            new CultureInfo("af-ZA")
+                                new CultureInfo("ar-SA"),
+                                new CultureInfo("af-ZA")
                         }
                     });
                     app.Run(context =>
@@ -104,21 +120,28 @@ namespace Microsoft.Extensions.Localization
                         return Task.FromResult(0);
                     });
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-GB,ar-MA,en-US");
-                var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
-                var response = await client.GetAsync(string.Empty);
-                Assert.Equal(3, count);
-            }
-        }
-        
-        [Fact]
-        public async Task OmitDefaultRequestCultureShouldNotThrowNullReferenceException_And_ShouldGetTheRightCulture()
+        await host.StartAsync();
+
+        using (var server = host.GetTestServer())
         {
-            var builder = new WebHostBuilder()
+            var client = server.CreateClient();
+            client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-GB,ar-MA,en-US");
+            var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
+            var response = await client.GetAsync(string.Empty);
+            Assert.Equal(3, count);
+        }
+    }
+
+    [Fact]
+    public async Task OmitDefaultRequestCultureShouldNotThrowNullReferenceException_And_ShouldGetTheRightCulture()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     app.UseRequestLocalization(new RequestLocalizationOptions
@@ -126,11 +149,11 @@ namespace Microsoft.Extensions.Localization
                         DefaultRequestCulture = new RequestCulture("en-US"),
                         SupportedCultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar-YE")
+                                new CultureInfo("ar-YE")
                         },
                         SupportedUICultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar-YE")
+                                new CultureInfo("ar-YE")
                         }
                     });
                     app.Run(context =>
@@ -143,15 +166,17 @@ namespace Microsoft.Extensions.Localization
                         return Task.FromResult(0);
                     });
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-GB,ar-YE,en-US");
-                var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
-                var response = await client.GetAsync(string.Empty);
-                Assert.Equal(3, count);
-            }
+        await host.StartAsync();
+
+        using (var server = host.GetTestServer())
+        {
+            var client = server.CreateClient();
+            client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-GB,ar-YE,en-US");
+            var count = client.DefaultRequestHeaders.AcceptLanguage.Count;
+            var response = await client.GetAsync(string.Empty);
+            Assert.Equal(3, count);
         }
     }
 }

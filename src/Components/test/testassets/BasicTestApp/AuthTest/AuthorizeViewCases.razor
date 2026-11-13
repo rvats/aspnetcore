@@ -1,4 +1,4 @@
-@page "/AuthorizeViewCases"
+﻿@page "/AuthorizeViewCases"
 @using Microsoft.AspNetCore.Components.Authorization
 
 <div id="no-authorization-rule">
@@ -48,3 +48,16 @@
         </NotAuthorized>
     </AuthorizeView>
 </div>
+
+<button id="auth-interactivity" @onclick="IncrementInteractionCount">
+    Interactions: @interactionCount
+</button>
+
+@code {
+    private int interactionCount;
+
+    private void IncrementInteractionCount()
+    {
+        interactionCount++;
+    }
+}

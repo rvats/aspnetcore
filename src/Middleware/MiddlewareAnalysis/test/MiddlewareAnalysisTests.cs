@@ -1,25 +1,27 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Diagnostics;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Xunit;
+using Microsoft.Extensions.Hosting;
 
-namespace Microsoft.AspNetCore.MiddlewareAnalysis
+namespace Microsoft.AspNetCore.MiddlewareAnalysis;
+
+public class MiddlewareAnalysisTests
 {
-    public class MiddlewareAnalysisTests
+    [Fact]
+    public async Task ExceptionWrittenToDiagnostics()
     {
-        [Fact]
-        public async Task ExceptionWrittenToDiagnostics()
-        {
-            DiagnosticListener diagnosticListener = null;
+        DiagnosticListener diagnosticListener = null;
 
-            var builder = new WebHostBuilder()
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     diagnosticListener = app.ApplicationServices.GetRequiredService<DiagnosticListener>();
@@ -31,23 +33,26 @@ namespace Microsoft.AspNetCore.MiddlewareAnalysis
                     });
                 })
                 .ConfigureServices(services => services.AddMiddlewareAnalysis());
-            var server = new TestServer(builder);
+            }).Build();
 
-            var listener = new TestDiagnosticListener();
-            diagnosticListener.SubscribeWithAdapter(listener);
-            
-            await server.CreateClient().GetAsync(string.Empty);
+        await host.StartAsync();
 
-            // "Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware",
-            // "Microsoft.AspNetCore.MiddlewareAnalysis.MiddlewareAnalysisTests.+<>c"
-            Assert.Equal(2, listener.MiddlewareStarting.Count);
-            Assert.Equal("Microsoft.AspNetCore.MiddlewareAnalysis.MiddlewareAnalysisTests+<>c", listener.MiddlewareStarting[1]);
-            // reversed "RunInlineMiddleware"
-            Assert.Equal(1, listener.MiddlewareException.Count);
-            Assert.Equal("Microsoft.AspNetCore.MiddlewareAnalysis.MiddlewareAnalysisTests+<>c", listener.MiddlewareException[0]);
-            // reversed "Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware"
-            Assert.Equal(1, listener.MiddlewareFinished.Count);
-            Assert.Equal("Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware", listener.MiddlewareFinished[0]);
-        }
+        var server = host.GetTestServer();
+
+        var listener = new TestDiagnosticListener();
+        diagnosticListener.SubscribeWithAdapter(listener);
+
+        await server.CreateClient().GetAsync(string.Empty);
+
+        // "Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware",
+        // "Microsoft.AspNetCore.MiddlewareAnalysis.MiddlewareAnalysisTests.+<>c"
+        Assert.Equal(2, listener.MiddlewareStarting.Count);
+        Assert.Equal("Microsoft.AspNetCore.MiddlewareAnalysis.MiddlewareAnalysisTests+<>c", listener.MiddlewareStarting[1]);
+        // reversed "RunInlineMiddleware"
+        Assert.Single(listener.MiddlewareException);
+        Assert.Equal("Microsoft.AspNetCore.MiddlewareAnalysis.MiddlewareAnalysisTests+<>c", listener.MiddlewareException[0]);
+        // reversed "Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware"
+        Assert.Single(listener.MiddlewareFinished);
+        Assert.Equal("Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware", listener.MiddlewareFinished[0]);
     }
 }

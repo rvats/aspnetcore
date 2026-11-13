@@ -1,153 +1,319 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Linq;
-using System.Linq.Expressions;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Components.Rendering;
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.AspNetCore.Components.Test.Helpers;
-using Xunit;
 
-namespace Microsoft.AspNetCore.Components.Forms
+namespace Microsoft.AspNetCore.Components.Forms;
+
+public class InputSelectTest
 {
-    public class InputSelectTest
+    private readonly TestRenderer _testRenderer = new TestRenderer();
+
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNotNullableEnumWithNotEmptyValue()
     {
-        [Fact]
-        public async Task ParsesCurrentValueWhenUsingNotNullableEnumWithNotEmptyValue()
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<TestEnum, TestInputSelect<TestEnum>>
         {
-            // Arrange
-            var model = new TestModel();
-            var rootComponent = new TestInputSelectHostComponent<TestEnum>
-            {
-                EditContext = new EditContext(model),
-                ValueExpression = () => model.NotNullableEnum
-            };
-            var inputSelectComponent = await RenderAndGetTestInputComponentAsync(rootComponent);
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableEnum
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-            // Act
-            inputSelectComponent.CurrentValueAsString = "Two";
+        // Act
+        inputSelectComponent.CurrentValueAsString = "Two";
 
-            // Assert
-            Assert.Equal(TestEnum.Two, inputSelectComponent.CurrentValue);
-        }
+        // Assert
+        Assert.Equal(TestEnum.Two, inputSelectComponent.CurrentValue);
+    }
 
-        [Fact]
-        public async Task ParsesCurrentValueWhenUsingNotNullableEnumWithEmptyValue()
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNotNullableEnumWithEmptyValue()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<TestEnum, TestInputSelect<TestEnum>>
         {
-            // Arrange
-            var model = new TestModel();
-            var rootComponent = new TestInputSelectHostComponent<TestEnum>
-            {
-                EditContext = new EditContext(model),
-                ValueExpression = () => model.NotNullableEnum
-            };
-            var inputSelectComponent = await RenderAndGetTestInputComponentAsync(rootComponent);
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableEnum
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-            // Act
-            inputSelectComponent.CurrentValueAsString = "";
+        // Act
+        inputSelectComponent.CurrentValueAsString = "";
 
-            // Assert
-            Assert.Equal(default, inputSelectComponent.CurrentValue);
-        }
+        // Assert
+        Assert.Equal(default, inputSelectComponent.CurrentValue);
+    }
 
-        [Fact]
-        public async Task ParsesCurrentValueWhenUsingNullableEnumWithNotEmptyValue()
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNullableEnumWithNotEmptyValue()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<TestEnum?, TestInputSelect<TestEnum?>>
         {
-            // Arrange
-            var model = new TestModel();
-            var rootComponent = new TestInputSelectHostComponent<TestEnum?>
-            {
-                EditContext = new EditContext(model),
-                ValueExpression = () => model.NullableEnum
-            };
-            var inputSelectComponent = await RenderAndGetTestInputComponentAsync(rootComponent);
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NullableEnum
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-            // Act
-            inputSelectComponent.CurrentValueAsString = "Two";
+        // Act
+        inputSelectComponent.CurrentValueAsString = "Two";
 
-            // Assert
-            Assert.Equal(TestEnum.Two, inputSelectComponent.Value);
-        }
+        // Assert
+        Assert.Equal(TestEnum.Two, inputSelectComponent.Value);
+    }
 
-        [Fact]
-        public async Task ParsesCurrentValueWhenUsingNullableEnumWithEmptyValue()
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNullableEnumWithEmptyValue()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<TestEnum?, TestInputSelect<TestEnum?>>
         {
-            // Arrange
-            var model = new TestModel();
-            var rootComponent = new TestInputSelectHostComponent<TestEnum?>
-            {
-                EditContext = new EditContext(model),
-                ValueExpression = () => model.NullableEnum
-            };
-            var inputSelectComponent = await RenderAndGetTestInputComponentAsync(rootComponent);
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NullableEnum
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-            // Act
-            inputSelectComponent.CurrentValueAsString = "";
+        // Act
+        inputSelectComponent.CurrentValueAsString = "";
 
-            // Assert
-            Assert.Null(inputSelectComponent.CurrentValue);
-        }
+        // Assert
+        Assert.Null(inputSelectComponent.CurrentValue);
+    }
 
-        private static TestInputSelect<TValue> FindInputSelectComponent<TValue>(CapturedBatch batch)
-            => batch.ReferenceFrames
-                    .Where(f => f.FrameType == RenderTreeFrameType.Component)
-                    .Select(f => f.Component)
-                    .OfType<TestInputSelect<TValue>>()
-                    .Single();
-
-        private static async Task<TestInputSelect<TValue>> RenderAndGetTestInputComponentAsync<TValue>(TestInputSelectHostComponent<TValue> hostComponent)
+    // See: https://github.com/dotnet/aspnetcore/issues/9939
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNotNullableGuid()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<Guid, TestInputSelect<Guid>>
         {
-            var testRenderer = new TestRenderer();
-            var componentId = testRenderer.AssignRootComponentId(hostComponent);
-            await testRenderer.RenderRootComponentAsync(componentId);
-            return FindInputSelectComponent<TValue>(testRenderer.Batches.Single());
-        }
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableGuid
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-        enum TestEnum
+        // Act
+        var guid = Guid.NewGuid();
+        inputSelectComponent.CurrentValueAsString = guid.ToString();
+
+        // Assert
+        Assert.Equal(guid, inputSelectComponent.CurrentValue);
+    }
+
+    // See: https://github.com/dotnet/aspnetcore/issues/9939
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNullableGuid()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<Guid?, TestInputSelect<Guid?>>
         {
-            One,
-            Two,
-            Tree
-        }
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NullableGuid
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-        class TestModel
+        // Act
+        var guid = Guid.NewGuid();
+        inputSelectComponent.CurrentValueAsString = guid.ToString();
+
+        // Assert
+        Assert.Equal(guid, inputSelectComponent.CurrentValue);
+    }
+
+    // See: https://github.com/dotnet/aspnetcore/pull/19562
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNotNullableInt()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<int, TestInputSelect<int>>
         {
-            public TestEnum NotNullableEnum { get; set; }
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableInt
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-            public TestEnum? NullableEnum { get; set; }
-        }
+        // Act
+        inputSelectComponent.CurrentValueAsString = "42";
 
-        class TestInputSelect<TValue> : InputSelect<TValue>
+        // Assert
+        Assert.Equal(42, inputSelectComponent.CurrentValue);
+    }
+
+    // See: https://github.com/dotnet/aspnetcore/pull/19562
+    [Fact]
+    public async Task ParsesCurrentValueWhenUsingNullableInt()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<int?, TestInputSelect<int?>>
         {
-            public new TValue CurrentValue => base.CurrentValue;
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NullableInt
+        };
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
 
-            public new string CurrentValueAsString
-            {
-                get => base.CurrentValueAsString;
-                set => base.CurrentValueAsString = value;
-            }
-        }
+        // Act
+        inputSelectComponent.CurrentValueAsString = "42";
 
-        class TestInputSelectHostComponent<TValue> : AutoRenderComponent
+        // Assert
+        Assert.Equal(42, inputSelectComponent.CurrentValue);
+    }
+
+    [Fact]
+    public async Task ValidationErrorUsesExplicitDisplayName()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<int, TestInputSelect<int>>
         {
-            public EditContext EditContext { get; set; }
-
-            public Expression<Func<TValue>> ValueExpression { get; set; }
-
-            protected override void BuildRenderTree(RenderTreeBuilder builder)
-            {
-                builder.OpenComponent<CascadingValue<EditContext>>(0);
-                builder.AddAttribute(1, "Value", EditContext);
-                builder.AddAttribute(2, "ChildContent", new RenderFragment(childBuilder =>
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableInt,
+            AdditionalAttributes = new Dictionary<string, object>
                 {
-                    childBuilder.OpenComponent<TestInputSelect<TValue>>(0);
-                    childBuilder.AddAttribute(0, "ValueExpression", ValueExpression);
-                    childBuilder.CloseComponent();
-                }));
-                builder.CloseComponent();
-            }
+                    { "DisplayName", "Some number" }
+                }
+        };
+        var fieldIdentifier = FieldIdentifier.Create(() => model.NotNullableInt);
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
+
+        // Act
+        await inputSelectComponent.SetCurrentValueAsStringAsync("invalidNumber");
+
+        // Assert
+        var validationMessages = rootComponent.EditContext.GetValidationMessages(fieldIdentifier);
+        Assert.NotEmpty(validationMessages);
+        Assert.Contains("The Some number field is not valid.", validationMessages);
+    }
+
+    [Fact]
+    public async Task ValidationErrorUsesDisplayAttributeOnModel()
+    {
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<int, TestInputSelect<int>>
+        {
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableInt,
+        };
+        var fieldIdentifier = FieldIdentifier.Create(() => model.NotNullableInt);
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
+
+        await inputSelectComponent.SetCurrentValueAsStringAsync("invalidNumber");
+
+        var validationMessages = rootComponent.EditContext.GetValidationMessages(fieldIdentifier);
+        Assert.Contains("The Number from attribute field is not valid.", validationMessages);
+    }
+
+    [Fact]
+    public async Task InputElementIsAssignedSuccessfully()
+    {
+        // Arrange
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<int, TestInputSelect<int>>
+        {
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableInt,
+        };
+
+        // Act
+        var inputSelectComponent = await InputRenderer.RenderAndGetComponent(rootComponent);
+        var exception = Record.Exception(() => inputSelectComponent.Element);
+
+        // Assert
+        Assert.NotNull(inputSelectComponent.Element);
+    }
+
+    [Fact]
+    public async Task RendersIdAttribute()
+    {
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<TestEnum, TestInputSelect<TestEnum>>
+        {
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableEnum,
+        };
+
+        var componentId = await RenderAndGetInputSelectComponentIdAsync(rootComponent);
+        var frames = _testRenderer.GetCurrentRenderTreeFrames(componentId);
+
+        var idAttribute = frames.Array.Single(f => f.FrameType == RenderTreeFrameType.Attribute && f.AttributeName == "id");
+        Assert.Equal("model_NotNullableEnum", idAttribute.AttributeValue);
+    }
+
+    [Fact]
+    public async Task ExplicitIdOverridesGenerated()
+    {
+        var model = new TestModel();
+        var rootComponent = new TestInputHostComponent<TestEnum, TestInputSelect<TestEnum>>
+        {
+            EditContext = new EditContext(model),
+            ValueExpression = () => model.NotNullableEnum,
+            AdditionalAttributes = new Dictionary<string, object> { { "id", "custom-select-id" } }
+        };
+
+        var componentId = await RenderAndGetInputSelectComponentIdAsync(rootComponent);
+        var frames = _testRenderer.GetCurrentRenderTreeFrames(componentId);
+
+        var idAttribute = frames.Array.First(f => f.FrameType == RenderTreeFrameType.Attribute && f.AttributeName == "id");
+        Assert.Equal("custom-select-id", idAttribute.AttributeValue);
+    }
+
+    private async Task<int> RenderAndGetInputSelectComponentIdAsync<TValue>(TestInputHostComponent<TValue, TestInputSelect<TValue>> hostComponent)
+    {
+        var hostComponentId = _testRenderer.AssignRootComponentId(hostComponent);
+        await _testRenderer.RenderRootComponentAsync(hostComponentId);
+        var batch = _testRenderer.Batches.Single();
+        return batch.GetComponentFrames<TestInputSelect<TValue>>().Single().ComponentId;
+    }
+
+    enum TestEnum
+    {
+        One,
+        Two,
+        Tree
+    }
+
+    class TestModel
+    {
+        public TestEnum NotNullableEnum { get; set; }
+
+        public TestEnum? NullableEnum { get; set; }
+
+        public Guid NotNullableGuid { get; set; }
+
+        public Guid? NullableGuid { get; set; }
+
+        [Display(Name = "Number from attribute")]
+        public int NotNullableInt { get; set; }
+
+        public int? NullableInt { get; set; }
+    }
+
+    class TestInputSelect<TValue> : InputSelect<TValue>
+    {
+        public new TValue CurrentValue => base.CurrentValue;
+
+        public new string CurrentValueAsString
+        {
+            get => base.CurrentValueAsString;
+            set => base.CurrentValueAsString = value;
+        }
+        public async Task SetCurrentValueAsStringAsync(string value)
+        {
+            // This is equivalent to the subclass writing to CurrentValueAsString
+            // (e.g., from @bind), except to simplify the test code there's an InvokeAsync
+            // here. In production code it wouldn't normally be required because @bind
+            // calls run on the sync context anyway.
+            await InvokeAsync(() => { base.CurrentValueAsString = value; });
         }
     }
 }

@@ -1,36 +1,38 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Xunit;
+using Microsoft.Extensions.Hosting;
 
-namespace Microsoft.AspNetCore.Localization.Routing
+namespace Microsoft.AspNetCore.Localization.Routing;
+
+public class RouteDataRequestCultureProviderTest
 {
-    public class RouteDataRequestCultureProviderTest
+    [Theory]
+    [InlineData("{culture}/{ui-culture}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
+    [InlineData("{CULTURE}/{UI-CULTURE}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
+    [InlineData("{culture}/{ui-culture}/hello", "unsupported/unsupported/hello", "en-US", "en-US")]
+    [InlineData("{culture}/hello", "ar-SA/hello", "ar-SA", "en-US")]
+    [InlineData("hello", "hello", "en-US", "en-US")]
+    [InlineData("{ui-culture}/hello", "ar-YE/hello", "en-US", "ar-YE")]
+    public async Task GetCultureInfo_FromRouteData(
+        string routeTemplate,
+        string requestUrl,
+        string expectedCulture,
+        string expectedUICulture)
     {
-        [Theory]
-        [InlineData("{culture}/{ui-culture}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
-        [InlineData("{CULTURE}/{UI-CULTURE}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
-        [InlineData("{culture}/{ui-culture}/hello", "unsupported/unsupported/hello", "en-US", "en-US")]
-        [InlineData("{culture}/hello", "ar-SA/hello", "ar-SA", "en-US")]
-        [InlineData("hello", "hello", "en-US", "en-US")]
-        [InlineData("{ui-culture}/hello", "ar-YE/hello", "en-US", "ar-YE")]
-        public async Task GetCultureInfo_FromRouteData(
-            string routeTemplate,
-            string requestUrl,
-            string expectedCulture,
-            string expectedUICulture)
-        {
-            var builder = new WebHostBuilder()
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     app.UseRouter(routes =>
@@ -42,19 +44,19 @@ namespace Microsoft.AspNetCore.Localization.Routing
                                 DefaultRequestCulture = new RequestCulture("en-US"),
                                 SupportedCultures = new List<CultureInfo>
                                 {
-                                    new CultureInfo("ar-SA")
+                                        new CultureInfo("ar-SA")
                                 },
                                 SupportedUICultures = new List<CultureInfo>
                                 {
-                                    new CultureInfo("ar-YE")
+                                        new CultureInfo("ar-YE")
                                 }
                             };
                             options.RequestCultureProviders = new[]
                             {
-                                new RouteDataRequestCultureProvider()
-                                {
-                                    Options = options
-                                }
+                                    new RouteDataRequestCultureProvider()
+                                    {
+                                        Options = options
+                                    }
                             };
                             fork.UseRequestLocalization(options);
 
@@ -72,22 +74,29 @@ namespace Microsoft.AspNetCore.Localization.Routing
                 {
                     services.AddRouting();
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                var response = await client.GetAsync(requestUrl);
+        await host.StartAsync();
 
-                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                var data = await response.Content.ReadAsStringAsync();
-                Assert.Equal($"{expectedCulture},{expectedUICulture}", data);
-            }
-        }
-
-        [Fact]
-        public async Task GetDefaultCultureInfo_IfCultureKeysAreMissing()
+        using (var server = host.GetTestServer())
         {
-            var builder = new WebHostBuilder()
+            var client = server.CreateClient();
+            var response = await client.GetAsync(requestUrl);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var data = await response.Content.ReadAsStringAsync();
+            Assert.Equal($"{expectedCulture},{expectedUICulture}", data);
+        }
+    }
+
+    [Fact]
+    public async Task GetDefaultCultureInfo_IfCultureKeysAreMissing()
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     var options = new RequestLocalizationOptions
@@ -96,10 +105,10 @@ namespace Microsoft.AspNetCore.Localization.Routing
                     };
                     options.RequestCultureProviders = new[]
                     {
-                        new RouteDataRequestCultureProvider()
-                        {
-                            Options = options
-                        }
+                            new RouteDataRequestCultureProvider()
+                            {
+                                Options = options
+                            }
                     };
                     app.UseRequestLocalization(options);
                     app.Run(context =>
@@ -111,31 +120,38 @@ namespace Microsoft.AspNetCore.Localization.Routing
                                     $"{requestCulture.Culture.Name},{requestCulture.UICulture.Name}");
                     });
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                var response = await client.GetAsync("/page");
+        await host.StartAsync();
 
-                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                var data = await response.Content.ReadAsStringAsync();
-                Assert.Equal("en-US,en-US", data);
-            }
-        }
-
-        [Theory]
-        [InlineData("{c}/{uic}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
-        [InlineData("{C}/{UIC}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
-        [InlineData("{c}/hello", "ar-SA/hello", "ar-SA", "en-US")]
-        [InlineData("hello", "hello", "en-US", "en-US")]
-        [InlineData("{uic}/hello", "ar-YE/hello", "en-US", "ar-YE")]
-        public async Task GetCultureInfo_FromRouteData_WithCustomKeys(
-            string routeTemplate,
-            string requestUrl,
-            string expectedCulture,
-            string expectedUICulture)
+        using (var server = host.GetTestServer())
         {
-            var builder = new WebHostBuilder()
+            var client = server.CreateClient();
+            var response = await client.GetAsync("/page");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var data = await response.Content.ReadAsStringAsync();
+            Assert.Equal("en-US,en-US", data);
+        }
+    }
+
+    [Theory]
+    [InlineData("{c}/{uic}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
+    [InlineData("{C}/{UIC}/hello", "ar-SA/ar-YE/hello", "ar-SA", "ar-YE")]
+    [InlineData("{c}/hello", "ar-SA/hello", "ar-SA", "en-US")]
+    [InlineData("hello", "hello", "en-US", "en-US")]
+    [InlineData("{uic}/hello", "ar-YE/hello", "en-US", "ar-YE")]
+    public async Task GetCultureInfo_FromRouteData_WithCustomKeys(
+        string routeTemplate,
+        string requestUrl,
+        string expectedCulture,
+        string expectedUICulture)
+    {
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     app.UseRouter(routes =>
@@ -147,21 +163,21 @@ namespace Microsoft.AspNetCore.Localization.Routing
                                 DefaultRequestCulture = new RequestCulture("en-US"),
                                 SupportedCultures = new List<CultureInfo>
                                 {
-                                    new CultureInfo("ar-SA")
+                                        new CultureInfo("ar-SA")
                                 },
                                 SupportedUICultures = new List<CultureInfo>
                                 {
-                                    new CultureInfo("ar-YE")
+                                        new CultureInfo("ar-YE")
                                 }
                             };
                             options.RequestCultureProviders = new[]
                             {
-                                new RouteDataRequestCultureProvider()
-                                {
-                                    Options = options,
-                                    RouteDataStringKey = "c",
-                                    UIRouteDataStringKey = "uic"
-                                }
+                                    new RouteDataRequestCultureProvider()
+                                    {
+                                        Options = options,
+                                        RouteDataStringKey = "c",
+                                        UIRouteDataStringKey = "uic"
+                                    }
                             };
                             fork.UseRequestLocalization(options);
 
@@ -180,16 +196,18 @@ namespace Microsoft.AspNetCore.Localization.Routing
                 {
                     services.AddRouting();
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                var response = await client.GetAsync(requestUrl);
+        await host.StartAsync();
 
-                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                var data = await response.Content.ReadAsStringAsync();
-                Assert.Equal($"{expectedCulture},{expectedUICulture}", data);
-            }
+        using (var server = host.GetTestServer())
+        {
+            var client = server.CreateClient();
+            var response = await client.GetAsync(requestUrl);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var data = await response.Content.ReadAsStringAsync();
+            Assert.Equal($"{expectedCulture},{expectedUICulture}", data);
         }
     }
 }

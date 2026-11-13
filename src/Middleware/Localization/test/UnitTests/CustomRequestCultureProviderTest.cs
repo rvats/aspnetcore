@@ -1,25 +1,26 @@
-// Copyright (c) .NET Foundation. All rights reserved. 
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.AspNetCore.TestHost;
-using Xunit;
+using Microsoft.Extensions.Hosting;
 
-namespace Microsoft.Extensions.Localization
+namespace Microsoft.Extensions.Localization;
+
+public class CustomRequestCultureProviderTest
 {
-    public class CustomRequestCultureProviderTest
+    [Fact]
+    public async Task CustomRequestCultureProviderThatGetsCultureInfoFromUrl()
     {
-        [Fact]
-        public async Task CustomRequestCultureProviderThatGetsCultureInfoFromUrl()
-        {
-            var builder = new WebHostBuilder()
+        using var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
+                .UseTestServer()
                 .Configure(app =>
                 {
                     var options = new RequestLocalizationOptions
@@ -27,11 +28,11 @@ namespace Microsoft.Extensions.Localization
                         DefaultRequestCulture = new RequestCulture("en-US"),
                         SupportedCultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar")
+                                new CultureInfo("ar")
                         },
                         SupportedUICultures = new List<CultureInfo>
                         {
-                            new CultureInfo("ar")
+                                new CultureInfo("ar")
                         }
                     };
                     options.RequestCultureProviders.Insert(0, new CustomRequestCultureProvider(context =>
@@ -49,24 +50,26 @@ namespace Microsoft.Extensions.Localization
                         return Task.FromResult(0);
                     });
                 });
+            }).Build();
 
-            using (var server = new TestServer(builder))
-            {
-                var client = server.CreateClient();
-                var response = await client.GetAsync("/ar/page");
-            }
-        }
+        await host.StartAsync();
 
-        private string GetCultureInfoFromUrl(HttpContext context, IList<CultureInfo> supportedCultures)
+        using (var server = host.GetTestServer())
         {
-            var currentCulture = "en";
-            var segments = context.Request.Path.Value.Split(new char[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length > 1 && segments[0].Length == 2)
-            {
-                currentCulture = segments[0];
-            }
-
-            return currentCulture;
+            var client = server.CreateClient();
+            var response = await client.GetAsync("/ar/page");
         }
+    }
+
+    private static string GetCultureInfoFromUrl(HttpContext context, IList<CultureInfo> supportedCultures)
+    {
+        var currentCulture = "en";
+        var segments = context.Request.Path.Value.Split(new char[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length > 1 && segments[0].Length == 2)
+        {
+            currentCulture = segments[0];
+        }
+
+        return currentCulture;
     }
 }

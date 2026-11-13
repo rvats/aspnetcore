@@ -1,13 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.
 
 using System.Diagnostics;
 using System.Numerics;
 
 namespace System.Net.Http.HPack
 {
-    internal class IntegerDecoder
+    internal struct IntegerDecoder
     {
         private int _i;
         private int _m;
@@ -74,7 +73,7 @@ namespace System.Net.Http.HPack
                 throw new HPackDecodingException(SR.net_http_hpack_bad_integer);
             }
 
-            _i = _i + ((b & 0x7f) << _m);
+            _i += ((b & 0x7f) << _m);
 
             // If the addition overflowed, the result will be negative.
             if (_i < 0)
@@ -82,7 +81,7 @@ namespace System.Net.Http.HPack
                 throw new HPackDecodingException(SR.net_http_hpack_bad_integer);
             }
 
-            _m = _m + 7;
+            _m += 7;
 
             if ((b & 128) == 0)
             {

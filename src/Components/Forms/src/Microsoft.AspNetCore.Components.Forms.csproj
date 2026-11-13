@@ -1,19 +1,30 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;$(DefaultNetCoreTargetFramework)</TargetFrameworks>
-    <TargetFrameworks Condition="'$(DotNetBuildFromSource)' == 'true'">$(DefaultNetCoreTargetFramework)</TargetFrameworks>
+    <TargetFramework>$(DefaultNetCoreTargetFramework)</TargetFramework>
     <IsAspNetCoreApp>true</IsAspNetCoreApp>
     <Description>Forms and validation support for Blazor applications.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Nullable>enable</Nullable>
+    <IsTrimmable>true</IsTrimmable>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="Microsoft.AspNetCore.Components" />
+    <ProjectReference Include="$(RepoRoot)src\Components\Components\src\Microsoft.AspNetCore.Components.csproj" />
+    <ProjectReference Include="$(RepoRoot)src\Validation\src\Microsoft.Extensions.Validation.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'" >
-    <Reference Include="System.ComponentModel.Annotations" />
+  <ItemGroup>
+    <Compile Include="$(ComponentsSharedSourceRoot)src\ExpressionFormatting\**\*" />
+    <Compile Include="$(ComponentsSharedSourceRoot)src\HotReloadManager.cs" LinkBase="HotReload" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Microsoft.AspNetCore.Components.Forms.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Properties\ILLink.Substitutions.xml" LogicalName="ILLink.Substitutions.xml" />
   </ItemGroup>
 
 </Project>

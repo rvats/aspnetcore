@@ -1,86 +1,86 @@
-using System;
-using System.IO;
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
 using System.Net;
-using System.Runtime.Loader;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 
-namespace AutobahnTestApp
+namespace AutobahnTestApp;
+
+public class Program
 {
-    public class Program
+    public static Task Main(string[] args)
     {
-        public static void Main(string[] args)
-        {
-            var scenarioName = "Unknown";
-            var config = new ConfigurationBuilder()
-                .AddCommandLine(args)
-                .Build();
+        var scenarioName = "Unknown";
+        var config = new ConfigurationBuilder()
+            .AddCommandLine(args)
+            .Build();
 
-            var builder = new WebHostBuilder()
+        var builder = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
                 .ConfigureLogging(loggingBuilder => loggingBuilder.AddConsole())
                 .UseConfiguration(config)
                 .UseContentRoot(Directory.GetCurrentDirectory())
                 .UseIISIntegration()
                 .UseStartup<Startup>();
 
-            if (string.Equals(builder.GetSetting("server"), "Microsoft.AspNetCore.Server.HttpSys", System.StringComparison.Ordinal))
-            {
-                scenarioName = "HttpSysServer";
-                Console.WriteLine("Using HttpSys server");
-                builder.UseHttpSys();
-            }
-            else if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_PORT")))
-            {
-                // ANCM is hosting the process.
-                // The port will not yet be configured at this point, but will also not require HTTPS.
-                scenarioName = "AspNetCoreModule";
-                Console.WriteLine("Detected ANCM, using Kestrel");
-                builder.UseKestrel();
-            }
-            else
-            {
-                // Also check "server.urls" for back-compat.
-                var urls = builder.GetSetting(WebHostDefaults.ServerUrlsKey) ?? builder.GetSetting("server.urls");
-                builder.UseSetting(WebHostDefaults.ServerUrlsKey, string.Empty);
-
-                Console.WriteLine($"Using Kestrel, URL: {urls}");
-
-                if (urls.Contains(";"))
+                if (string.Equals(webHostBuilder.GetSetting("server"), "Microsoft.AspNetCore.Server.HttpSys", System.StringComparison.Ordinal))
                 {
-                    throw new NotSupportedException("This test app does not support multiple endpoints.");
+                    scenarioName = "HttpSysServer";
+                    Console.WriteLine("Using HttpSys server");
+                    webHostBuilder.UseHttpSys();
                 }
-
-                var uri = new Uri(urls);
-
-                builder.UseKestrel(options =>
+                else if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_PORT")))
                 {
-                    options.Listen(IPAddress.Loopback, uri.Port, listenOptions =>
+                    // ANCM is hosting the process.
+                    // The port will not yet be configured at this point, but will also not require HTTPS.
+                    scenarioName = "AspNetCoreModule";
+                    Console.WriteLine("Detected ANCM, using Kestrel");
+                    webHostBuilder.UseKestrel();
+                }
+                else
+                {
+                    // Also check "server.urls" for back-compat.
+                    var urls = webHostBuilder.GetSetting(WebHostDefaults.ServerUrlsKey) ?? webHostBuilder.GetSetting("server.urls");
+                    webHostBuilder.UseSetting(WebHostDefaults.ServerUrlsKey, string.Empty);
+
+                    Console.WriteLine($"Using Kestrel, URL: {urls}");
+
+                    if (urls.Contains(";"))
                     {
-                        if (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+                        throw new NotSupportedException("This test app does not support multiple endpoints.");
+                    }
+
+                    var uri = new Uri(urls);
+
+                    webHostBuilder.UseKestrel(options =>
+                    {
+                        options.Listen(IPAddress.Loopback, uri.Port, listenOptions =>
                         {
-                            scenarioName = "Kestrel(SSL)";
-                            var certPath = Path.Combine(AppContext.BaseDirectory, "TestResources", "testCert.pfx");
-                            Console.WriteLine($"Using SSL with certificate: {certPath}");
-                            listenOptions.UseHttps(certPath, "testPassword");
-                        }
-                        else
-                        {
-                            scenarioName = "Kestrel(NonSSL)";
-                        }
+                            if (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+                            {
+                                scenarioName = "Kestrel(SSL)";
+                                var certPath = Path.Combine(AppContext.BaseDirectory, "TestResources", "testCert.pfx");
+                                Console.WriteLine($"Using SSL with certificate: {certPath}");
+                                listenOptions.UseHttps(certPath, "testPassword");
+                            }
+                            else
+                            {
+                                scenarioName = "Kestrel(NonSSL)";
+                            }
+                        });
                     });
-                });
-            }
+                }
+            });
 
-            var host = builder.Build();
+        var host = builder.Build();
 
-            AppDomain.CurrentDomain.UnhandledException += (_, a) =>
-            {
-                Console.WriteLine($"Unhandled exception (Scenario: {scenarioName}): {a.ExceptionObject.ToString()}");
-            };
+        AppDomain.CurrentDomain.UnhandledException += (_, a) =>
+        {
+            Console.WriteLine($"Unhandled exception (Scenario: {scenarioName}): {a.ExceptionObject.ToString()}");
+        };
 
-            Console.WriteLine($"Starting Server for Scenario: {scenarioName}");
-            host.Run();
-        }
+        Console.WriteLine($"Starting Server for Scenario: {scenarioName}");
+        return host.RunAsync();
     }
 }

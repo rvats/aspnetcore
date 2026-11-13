@@ -1,22 +1,21 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+namespace HostFilteringSample;
 
-namespace HostFilteringSample
+public class Program
 {
-    public class Program
+    public static Task Main(string[] args)
     {
-        public static void Main(string[] args)
-        {
-            BuildWebHost(args).Run();
-        }
+        return BuildWebHost(args).RunAsync();
+    }
 
-        public static IWebHost BuildWebHost(string[] args)
-        {
-            var hostBuilder = new WebHostBuilder()
+    public static IHost BuildWebHost(string[] args)
+    {
+        var hostBuilder = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
                 .ConfigureLogging((_, factory) =>
                 {
                     factory.SetMinimumLevel(LogLevel.Debug);
@@ -30,8 +29,8 @@ namespace HostFilteringSample
                 })
                 .UseKestrel()
                 .UseStartup<Startup>();
+            });
 
-            return hostBuilder.Build();
-        }
+        return hostBuilder.Build();
     }
 }

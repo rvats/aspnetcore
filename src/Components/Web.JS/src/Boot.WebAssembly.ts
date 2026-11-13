@@ -1,79 +1,42 @@
-import '@microsoft/dotnet-js-interop';
-import './GlobalExports';
-import * as Environment from './Environment';
-import { monoPlatform } from './Platform/Mono/MonoPlatform';
-import { renderBatch } from './Rendering/Renderer';
-import { SharedMemoryRenderBatch } from './Rendering/RenderBatch/SharedMemoryRenderBatch';
-import { Pointer } from './Platform/Platform';
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+/* eslint-disable array-element-newline */
+import { Blazor } from './GlobalExports';
 import { shouldAutoStart } from './BootCommon';
-import { setEventDispatcher } from './Rendering/RendererEventDispatcher';
+import { WebAssemblyStartOptions } from './Platform/WebAssemblyStartOptions';
+import { setWebAssemblyOptions, startWebAssembly } from './Boot.WebAssembly.Common';
+import { WebAssemblyComponentDescriptor, discoverComponents, discoverWebAssemblyOptions } from './Services/ComponentDescriptorDiscovery';
+import * as DotNet from './JSInterop/Microsoft.JSInterop';
+import { InitialRootComponentsList } from './Services/InitialRootComponentsList';
+import { JSEventRegistry } from './Services/JSEventRegistry';
+import { printErr } from './Platform/Mono/MonoPlatform';
+
+type BlazorWebAssemblyStartOptions = Partial<WebAssemblyStartOptions> & { webAssembly?: Partial<WebAssemblyStartOptions> };
 
 let started = false;
 
-async function boot(options?: any): Promise<void> {
-
+async function boot(options?: BlazorWebAssemblyStartOptions): Promise<void> {
   if (started) {
     throw new Error('Blazor has already started.');
   }
   started = true;
 
-  setEventDispatcher((eventDescriptor, eventArgs) => DotNet.invokeMethodAsync('Microsoft.AspNetCore.Blazor', 'DispatchEvent', eventDescriptor, JSON.stringify(eventArgs)));
+  // Accept the `webAssembly` property from the blazor.web.js options format
+  const normalizedOptions = options?.webAssembly ?? options ?? {};
+  setWebAssemblyOptions(Promise.resolve(normalizedOptions));
 
-  // Configure environment for execution under Mono WebAssembly with shared-memory rendering
-  const platform = Environment.setPlatform(monoPlatform);
-  window['Blazor'].platform = platform;
-  window['Blazor']._internal.renderBatch = (browserRendererId: number, batchAddress: Pointer) => {
-    renderBatch(browserRendererId, new SharedMemoryRenderBatch(batchAddress));
-  };
+  JSEventRegistry.create(Blazor);
+  const webAssemblyComponents = discoverComponents(document, 'webassembly') as WebAssemblyComponentDescriptor[];
+  const webAssemblyOptions = discoverWebAssemblyOptions(document);
 
-  // Configure navigation via JS Interop
-  window['Blazor']._internal.navigationManager.listenForNavigationEvents(async (uri: string, intercepted: boolean): Promise<void> => {
-    await DotNet.invokeMethodAsync(
-      'Microsoft.AspNetCore.Blazor',
-      'NotifyLocationChanged',
-      uri,
-      intercepted
-    );
-  });
-
-  // Fetch the boot JSON file
-  const bootConfig = await fetchBootConfigAsync();
-
-  if (!bootConfig.linkerEnabled) {
-    console.info('Blazor is running in dev mode without IL stripping. To make the bundle size significantly smaller, publish the application or see https://go.microsoft.com/fwlink/?linkid=870414');
-  }
-
-  // Determine the URLs of the assemblies we want to load, then begin fetching them all
-  const loadAssemblyUrls = bootConfig.assemblies
-    .map(filename => `_framework/_bin/${filename}`);
-
-  try {
-    await platform.start(loadAssemblyUrls);
-  } catch (ex) {
-    throw new Error(`Failed to start platform. Reason: ${ex}`);
-  }
-
-  // Start up the application
-  platform.callEntryPoint(bootConfig.entryAssembly);
+  const components = new InitialRootComponentsList(webAssemblyComponents);
+  await startWebAssembly(components, webAssemblyOptions);
 }
 
-async function fetchBootConfigAsync() {
-  // Later we might make the location of this configurable (e.g., as an attribute on the <script>
-  // element that's importing this file), but currently there isn't a use case for that.
-  const bootConfigResponse = await fetch('_framework/blazor.boot.json', { method: 'Get', credentials: 'include' });
-  return bootConfigResponse.json() as Promise<BootJsonData>;
-}
+Blazor.start = boot;
+window['DotNet'] = DotNet;
 
-// Keep in sync with BootJsonData in Microsoft.AspNetCore.Blazor.Build
-interface BootJsonData {
-  entryAssembly: string;
-  assemblies: string[];
-  linkerEnabled: boolean;
-}
-
-window['Blazor'].start = boot;
 if (shouldAutoStart()) {
-  boot().catch(error => {
-    Module.printErr(error); // Logs it, and causes the error UI to appear
-  });
+  boot().catch(printErr);
 }

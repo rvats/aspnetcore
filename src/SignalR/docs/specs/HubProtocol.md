@@ -24,13 +24,15 @@ In the SignalR protocol, the following types of messages can be sent:
 | ------------------    | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `HandshakeRequest`    | Client         | Sent by the client to agree on the message format.                                                                            |
 | `HandshakeResponse`   | Server         | Sent by the server as an acknowledgment of the previous `HandshakeRequest` message. Contains an error if the handshake failed. |
-| `Close`               | Callee, Caller | Sent by the server when a connection is closed. Contains an error if the connection was closed because of an error.            |
+| `Close`               | Callee, Caller | Sent by the server when a connection is closed. Contains an error if the connection was closed because of an error. Sent by the client when it's closing the connection, unlikely to contain an error. |
 | `Invocation`          | Caller         | Indicates a request to invoke a particular method (the Target) with provided Arguments on the remote endpoint.                 |
 | `StreamInvocation`    | Caller         | Indicates a request to invoke a streaming method (the Target) with provided Arguments on the remote endpoint.                  |
 | `StreamItem`          | Callee, Caller | Indicates individual items of streamed response data from a previous `StreamInvocation` message or streamed uploads from an invocation with streamIds.                               |
 | `Completion`          | Callee, Caller | Indicates a previous `Invocation` or `StreamInvocation` has completed or a stream in an `Invocation` or `StreamInvocation` has completed. Contains an error if the invocation concluded with an error or the result of a non-streaming method invocation. The result will be absent for `void` methods. In case of streaming invocations no further `StreamItem` messages will be received. |
-| `CancelInvocation`    | Caller         | Sent by the client to cancel a streaming invocation on the server.                                                             |
+| `CancelInvocation`    | Caller         | Sent by the client to cancel an `Invocation` or `StreamInvocation` on the server.                                              |
 | `Ping`                | Caller, Callee | Sent by either party to check if the connection is active.                                                                     |
+| `Ack`                 | Caller, Callee | Sent by either party to acknowledge that messages have been received up to the provided sequence ID.                                                                |
+| `Sequence`            | Caller, Callee | Sent by either party as the first message when a connection reconnects. Specifies what sequence ID they will start sending messages starting at. Duplicate messages are possible to receive and should be ignored.                                                                    |
 
 After opening a connection to the server the client must send a `HandshakeRequest` message to the server as its first message. The handshake message is **always** a JSON message and contains the name of the format (protocol) as well as the version of the protocol that will be used for the duration of the connection. The server will reply with a `HandshakeResponse`, also always JSON, containing an error if the server does not support the protocol. If the server does not support the protocol requested by the client or the first message received from the client is not a `HandshakeRequest` message the server must close the connection. Both the `HandshakeRequest` and `HandshakeResponse` messages must be terminated by the ASCII character `0x1E` (record separator).
 
@@ -100,6 +102,12 @@ The SignalR protocol allows for multiple `StreamItem` messages to be transmitted
 On the Callee side, it is up to the Callee's Binder to determine if a method call will yield multiple results. For example, in .NET certain return types may indicate multiple results, while others may indicate a single result. Even then, applications may wish for multiple results to be buffered and returned in a single `Completion` frame. It is up to the Binder to decide how to map this. The Callee's Binder must encode each result in separate `StreamItem` messages, indicating the end of results by sending a `Completion` message.
 
 On the Caller side, the user code which performs the invocation indicates how it would like to receive the results and it is up the Caller's Binder to handle the result. If the Caller expects only a single result, but multiple results are returned, or if the caller expects multiple results but only one result is returned, the Caller's Binder should yield an error. If the Caller wants to stop receiving `StreamItem` messages before the Callee sends a `Completion` message, the Caller can send a `CancelInvocation` message with the same `Invocation ID` used for the `StreamInvocation` message that started the stream. When the Callee receives a `CancelInvocation` message it will stop sending `StreamItem` messages and will send a `Completion` message. The Caller is free to ignore any `StreamItem` messages as well as the `Completion` message after sending `CancelInvocation`.
+
+## Cancellation
+
+In addition to canceling streaming invocations as described above, the Caller may send a `CancelInvocation` message with the same `Invocation ID` as a previously sent `Invocation` to request that the Callee cancel an in-progress non-streaming invocation. How the Callee handles the cancellation request is implementation-specific (for example, the .NET server surfaces it by canceling a `CancellationToken` argument on the hub method, if one is declared); the Callee is not required to abort the method, but it **MUST** still send a `Completion` message for the invocation. The Caller is free to ignore the `Completion` message after sending `CancelInvocation`.
+
+If the Callee receives a `CancelInvocation` message with an `Invocation ID` that does not match any in-progress invocation or stream, it **SHOULD** ignore the message.
 
 ## Upload streaming
 
@@ -508,6 +516,34 @@ Example - A `Close` message with an error that allows automatic client reconnect
 }
 ```
 
+### Ack Message Encoding
+An `Ack` message is a JSON object with the following properties
+
+* `type` - A `Number` with the literal value `8`, indicating that this message is an `Ack`.
+* `sequenceId` - A `Number` specifying how many trackable messages have been received.
+
+Example:
+```json
+{
+    "type": 8,
+    "sequenceId": 1394
+}
+```
+
+### Sequence Message Encoding
+A `Sequence` message is a JSON object with the following properties
+
+* `type` - A `Number` with the literal value `9`, indicating that this message is a `Sequence`.
+* `sequenceId` - A `Number` specifying what the new starting message number will be. Only sent on reconnects.
+
+Example:
+```json
+{
+    "type": 9,
+    "sequenceId": 1234
+}
+```
+
 ### JSON Header Encoding
 
 Message headers are encoded into a JSON object, with string values, that are stored in the `headers` property. For example:
@@ -543,7 +579,7 @@ MessagePack uses different formats to encode values. Refer to the [MsgPack forma
 `Invocation` messages have the following structure:
 
 ```
-[1, Headers, InvocationId, NonBlocking, Target, [Arguments], [StreamIds]]
+[1, Headers, InvocationId, Target, [Arguments], [StreamIds]]
 ```
 
 * `1` - Message Type - `1` indicates this is an `Invocation` message.
@@ -861,6 +897,58 @@ is decoded as follows:
 * `0x7a` - `z`
 * `0xc3` - `True` (AllowReconnect)
 
+### Ack Message Encoding
+
+`Ack` messages have the following structure
+
+```
+[8, SequenceId]
+```
+
+* `8` - Message Type - `8` indicates this is an `Ack` message.
+
+Examples:
+
+#### Ack message
+
+The following payload:
+```
+0x92 0x08 0xcc 0x24
+```
+
+is decoded as follows:
+
+* `0x92` - 2-element array
+* `0x08` - `8` (Message Type - `Ack` message)
+* `0xcc` - 8-bit unsigned int (any unsigned int size is fine)
+* `0x24` - `36`
+
+### Sequence Message Encoding
+
+`Sequence` messages have the following structure
+
+```
+[9, SequenceId]
+```
+
+* `9` - Message Type - `9` indicates this is an `Sequence` message.
+
+Examples:
+
+#### Sequence message
+
+The following payload:
+```
+0x92 0x09 0xcc 0x13
+```
+
+is decoded as follows:
+
+* `0x92` - 2-element array
+* `0x09` - `9` (Message Type - `Sequence` message)
+* `0xcc` - 8-bit unsigned int (any unsigned int size is fine)
+* `0x13` - `19`
+
 ### MessagePack Headers Encoding
 
 Headers are encoded in MessagePack messages as a Map that immediately follows the type value. The Map can be empty, in which case it is represented by the byte `0x80`. If there are items in the map,
@@ -941,7 +1029,7 @@ VarInt encodes the most significant bit as a marker indicating whether the byte 
 
 Examples:
  * VarInt: `0x35` (`%00110101`) - the most significant bit is 0 so the value is %x0110101 i.e. 0x35 (53)
- * VarInt: `0x80 0x25` (`%10000000 %00101001`) - the most significant bit of the first byte is 1 so the remaining bits (%x0000000) are the lowest bits of the value. The most significant bit of the second byte is 0 meaning this is last byte of the VarInt. The actual value bits (%x0101001) need to be prepended to the bits we already read so the values is %01010010000000 i.e. 0x1480 (5248)
+ * VarInt: `0x80 0x29` (`%10000000 %00101001`) - the most significant bit of the first byte is 1 so the remaining bits (%x0000000) are the lowest bits of the value. The most significant bit of the second byte is 0 meaning this is last byte of the VarInt. The actual value bits (%x0101001) need to be prepended to the bits we already read so the values is %01010010000000 i.e. 0x1480 (5248)
 
 The biggest supported payloads are 2GB in size so the biggest number we need to support is 0x7fffffff which when encoded as VarInt is 0xFF 0xFF 0xFF 0xFF 0x07 - hence the maximum size of the length prefix is 5 bytes.
 

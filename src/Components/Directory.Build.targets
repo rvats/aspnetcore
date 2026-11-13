@@ -1,41 +1,44 @@
 ﻿<Project>
-  <PropertyGroup Condition="'$(IsUnitTestProject)' != 'true'">
-    <GenerateDocumentationFile Condition="'$(GenerateDocumentationFile)' == ''">true</GenerateDocumentationFile>
-  </PropertyGroup>
+  <!-- blazor.web.js and blazor.server.js are provided by Microsoft.AspNetCore.App.Internal.Assets.
+       blazor.webassembly.js is provided by Microsoft.AspNetCore.Components.WebAssembly.
+       No need to set BlazorWebAssemblyJSPath for the Wasm SDK to resolve it separately. -->
+  <!-- Add Assets.Internal reference in .targets so TargetFrameworkIdentifier is available.
+       Exclude netstandard projects (analyzers, generators, tasks), Wasm projects
+       (which provide their own JS via the Components.WebAssembly package), and
+       source-only builds (Assets.Internal is excluded from source-build). -->
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp' and '$(UsingMicrosoftNETSdkBlazorWebAssembly)' != 'true' and '$(DotNetBuildSourceOnly)' != 'true' and '$(IncludeComponentsWebAssets)' != 'false'">
+    <ProjectReference Include="$(RepoRoot)src/Assets/Microsoft.AspNetCore.App.Internal.Assets.csproj" PrivateAssets="All" />
+  </ItemGroup>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory)..\, Directory.Build.targets))\Directory.Build.targets" />
 
-  <!-- We need to do this because our build config interferes with the FrameworkReference definition.
-       This is a way to add the framework defition to the projects that need it (like Blazor Server and
-       Blazor Dev Server) -->
-  <Target Name="_AddAspNetCoreFrameworkReference" BeforeTargets="ProcessFrameworkReferences" Condition="'$(UseLatestAspNetCoreReference)' == 'true' ">
-    <ItemGroup>
-      <FrameworkReference Include="Microsoft.AspNetCore.App" Version="$(LatestAspNetCoreReferenceVersion)" />
-      <KnownFrameworkReference Include="Microsoft.AspNetCore.App">
-        <TargetFramework>netcoreapp3.1</TargetFramework>
-        <RuntimeFrameworkName>Microsoft.AspNetCore.App</RuntimeFrameworkName>
-        <DefaultRuntimeFrameworkVersion>$(LatestAspNetCoreReferenceVersion)</DefaultRuntimeFrameworkVersion>
-        <LatestRuntimeFrameworkVersion>$(LatestAspNetCoreReferenceVersion)</LatestRuntimeFrameworkVersion>
-        <TargetingPackName>Microsoft.AspNetCore.App.Ref</TargetingPackName>
-        <TargetingPackVersion>$(LatestAspNetCoreReferenceVersion)</TargetingPackVersion>
-        <RuntimePackNamePatterns>Microsoft.AspNetCore.App.Runtime.**RID**</RuntimePackNamePatterns>
-        <RuntimePackRuntimeIdentifiers>linux-arm;linux-arm64;linux-musl-arm64;linux-musl-x64;linux-x64;osx-x64;rhel.6-x64;tizen.4.0.0-armel;tizen.5.0.0-armel;win-arm;win-arm64;win-x64;win-x86</RuntimePackRuntimeIdentifiers>
-        <IsTrimmable>true</IsTrimmable>
-      </KnownFrameworkReference>
-    </ItemGroup>
-  </Target>
+  <!-- E2E app publishes use app-specific global properties while their framework dependencies
+       share the repository's normal build outputs. Do not create property-distinct dependency
+       builds that can concurrently rewrite those shared outputs. -->
+  <ItemDefinitionGroup Condition="'$(IsTestAssetProject)' == 'true'">
+    <ProjectReference>
+      <UndefineProperties>%(UndefineProperties);E2ECompileTestHarness;E2EAppMode;PublishDir;_E2EIsPublishing</UndefineProperties>
+    </ProjectReference>
+  </ItemDefinitionGroup>
 
-  <ItemGroup>
-    <!-- Add a project dependency without reference output assemblies to enforce build order -->
-    <!-- Applying workaround for https://github.com/microsoft/msbuild/issues/2661 and https://github.com/dotnet/sdk/issues/952 -->
-    <ProjectReference
-      Condition="'$(ReferenceBlazorBuildLocally)' == 'true' and '$(BuildNodeJS)' != 'false' and '$(BuildingInsideVisualStudio)' != 'true'"
-      Include="$(RepoRoot)src\Components\Web.JS\Microsoft.AspNetCore.Components.Web.JS.npmproj"
-      ReferenceOutputAssemblies="false"
-      SkipGetTargetFrameworkProperties="true"
-      UndefineProperties="TargetFramework"
-      Private="false" />
+  <!-- PrepareE2EApps supplies these properties to the app itself. Preserve them on that edge,
+       then remove them when the app traverses its own project references. -->
+  <ItemGroup Condition="'$(IsTestAssetProject)' == 'true'">
+    <ProjectReference Update="@(ProjectReference->WithMetadataValue('E2EApp', 'true'))">
+      <UndefineProperties />
+    </ProjectReference>
   </ItemGroup>
 
-  <Import Project="Blazor\Build\src\ReferenceFromSource.props" Condition="'$(ReferenceBlazorBuildLocally)' == 'true'" />
-
-  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory)..\, Directory.Build.targets))\Directory.Build.targets" />
+  <!-- After ResolveReferences.targets (imported above) converts Reference to ProjectReference
+       at evaluation time (which drops all custom metadata), re-apply metadata at evaluation
+       time so it is always in effect for every build phase (Build, Publish, Razor, etc.):
+       - ReferenceOutputAssembly=false: don't try to resolve/copy the DLL (the project uses
+         CopyBuildOutputToOutputDirectory=false so no DLL exists in the output directory)
+       - Private=false: don't copy to consuming project output
+       - PrivateAssets=all: don't flow as a dependency to consuming packages -->
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp' and '$(UsingMicrosoftNETSdkBlazorWebAssembly)' != 'true' and '$(DotNetBuildSourceOnly)' != 'true' and '$(IncludeComponentsWebAssets)' != 'false'">
+    <ProjectReference Update="$(RepoRoot)src\Assets\Microsoft.AspNetCore.App.Internal.Assets.csproj"
+      ReferenceOutputAssembly="false"
+      Private="false"
+      PrivateAssets="all" />
+  </ItemGroup>
 </Project>

@@ -1,544 +1,881 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using System.Threading.Tasks;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.AspNetCore.Server.Kestrel.Https.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests.TestTransport;
-using Microsoft.AspNetCore.Testing;
+using Microsoft.AspNetCore.InternalTesting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Testing;
-using Xunit;
+using Moq;
 
-namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
+namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests;
+
+public class HttpsTests : LoggedTest
 {
-    public class HttpsTests : LoggedTest
+    private static readonly X509Certificate2 _x509Certificate2 = TestResources.GetTestCertificate();
+
+    private static KestrelServerOptions CreateServerOptions()
     {
-        private KestrelServerOptions CreateServerOptions()
+        // It's not actually going to be used - we just need to satisfy the check in ApplyDefaultCertificate
+        var mockHttpsConfig = new Mock<IHttpsConfigurationService>();
+        mockHttpsConfig.Setup(m => m.IsInitialized).Returns(true);
+
+        var serverOptions = new KestrelServerOptions();
+        serverOptions.ApplicationServices = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton(mockHttpsConfig.Object)
+            .AddSingleton(Mock.Of<IHostEnvironment>())
+            .AddSingleton(new KestrelMetrics(new TestMeterFactory()))
+            .BuildServiceProvider();
+        return serverOptions;
+    }
+
+    [Fact]
+    public void UseHttpsDefaultsToDefaultCert()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.TestOverrideDefaultCertificate = _x509Certificate2;
+
+        serverOptions.ListenLocalhost(5000, options =>
         {
-            var serverOptions = new KestrelServerOptions();
-            serverOptions.ApplicationServices = new ServiceCollection()
-                .AddLogging()
-                .BuildServiceProvider();
-            return serverOptions;
+            options.UseHttps();
+        });
+
+        Assert.False(serverOptions.IsDevelopmentCertificateLoaded);
+
+        var ranUseHttpsAction = false;
+        serverOptions.ListenLocalhost(5001, options =>
+        {
+            options.UseHttps(opt =>
+            {
+                // The default cert is applied after UseHttps.
+                Assert.Null(opt.ServerCertificate);
+                ranUseHttpsAction = true;
+            });
+        });
+
+        Assert.True(ranUseHttpsAction);
+        Assert.False(serverOptions.IsDevelopmentCertificateLoaded);
+    }
+
+    [Fact]
+    public async Task UseHttpsWithAsyncCallbackDoesNotFallBackToDefaultCert()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        var testContext = new TestServiceContext(LoggerFactory);
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            listenOptions =>
+            {
+                listenOptions.UseHttps((stream, clientHelloInfo, state, cancellationToken) =>
+                    new ValueTask<SslServerAuthenticationOptions>(new SslServerAuthenticationOptions()), state: null);
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+            {
+                var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+                    sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                        enabledSslProtocols: SslProtocols.None,
+                        checkCertificateRevocation: false));
+
+                Logger.LogTrace(ex, "AuthenticateAsClientAsync Exception");
+            }
         }
 
-        [Fact]
-        public void UseHttpsDefaultsToDefaultCert()
+        var errorException = Assert.Single(loggerProvider.ErrorLogger.ErrorExceptions);
+        Assert.IsType<NotSupportedException>(errorException);
+    }
+
+    [Fact]
+    public void ConfigureHttpsDefaultsNeverLoadsDefaultCert()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.ConfigureHttpsDefaults(options =>
         {
-            var serverOptions = CreateServerOptions();
-            var defaultCert = TestResources.GetTestCertificate();
-            serverOptions.DefaultCertificate = defaultCert;
-
-            serverOptions.ListenLocalhost(5000, options =>
-            {
-                options.UseHttps();
-            });
-
-            Assert.False(serverOptions.IsDevCertLoaded);
-
-            serverOptions.ListenLocalhost(5001, options =>
-            {
-                options.UseHttps(opt =>
-                {
-                    // The default cert is applied after UseHttps.
-                    Assert.Null(opt.ServerCertificate);
-                });
-            });
-            Assert.False(serverOptions.IsDevCertLoaded);
-        }
-
-        [Fact]
-        public void ConfigureHttpsDefaultsNeverLoadsDefaultCert()
+            Assert.Null(options.ServerCertificate);
+            options.ServerCertificate = _x509Certificate2;
+            options.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+        });
+        var ranUseHttpsAction = false;
+        serverOptions.ListenLocalhost(5000, options =>
         {
-            var serverOptions = CreateServerOptions();
-            var testCert = TestResources.GetTestCertificate();
-            serverOptions.ConfigureHttpsDefaults(options =>
+            options.UseHttps(opt =>
             {
-                Assert.Null(options.ServerCertificate);
-                options.ServerCertificate = testCert;
-                options.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+                Assert.Equal(_x509Certificate2, opt.ServerCertificate);
+                Assert.Equal(ClientCertificateMode.RequireCertificate, opt.ClientCertificateMode);
+                ranUseHttpsAction = true;
             });
-            serverOptions.ListenLocalhost(5000, options =>
-            {
-                options.UseHttps(opt =>
-                {
-                    Assert.Equal(testCert, opt.ServerCertificate);
-                    Assert.Equal(ClientCertificateMode.RequireCertificate, opt.ClientCertificateMode);
-                });
-            });
-            // Never lazy loaded
-            Assert.False(serverOptions.IsDevCertLoaded);
-            Assert.Null(serverOptions.DefaultCertificate);
-        }
+        });
 
-        [Fact]
-        public void ConfigureCertSelectorNeverLoadsDefaultCert()
+        Assert.True(ranUseHttpsAction);
+
+        // Never lazy loaded
+        Assert.False(serverOptions.IsDevelopmentCertificateLoaded);
+        Assert.Null(serverOptions.DevelopmentCertificate);
+    }
+
+    [Fact]
+    public void ConfigureCertSelectorNeverLoadsDefaultCert()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.ConfigureHttpsDefaults(options =>
         {
-            var serverOptions = CreateServerOptions();
-            var testCert = TestResources.GetTestCertificate();
-            serverOptions.ConfigureHttpsDefaults(options =>
+            Assert.Null(options.ServerCertificate);
+            Assert.Null(options.ServerCertificateSelector);
+            options.ServerCertificateSelector = (features, name) =>
             {
-                Assert.Null(options.ServerCertificate);
-                Assert.Null(options.ServerCertificateSelector);
-                options.ServerCertificateSelector = (features, name) =>
-                {
-                    return testCert;
-                };
-                options.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-            });
-            serverOptions.ListenLocalhost(5000, options =>
-            {
-                options.UseHttps(opt =>
-                {
-                    Assert.Null(opt.ServerCertificate);
-                    Assert.NotNull(opt.ServerCertificateSelector);
-                    Assert.Equal(ClientCertificateMode.RequireCertificate, opt.ClientCertificateMode);
-                });
-            });
-            // Never lazy loaded
-            Assert.False(serverOptions.IsDevCertLoaded);
-            Assert.Null(serverOptions.DefaultCertificate);
-        }
-
-        [Fact]
-        public async Task EmptyRequestLoggedAsDebug()
+                return _x509Certificate2;
+            };
+            options.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+        });
+        var ranUseHttpsAction = false;
+        serverOptions.ListenLocalhost(5000, options =>
         {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
-
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate());
-                }))
+            options.UseHttps(opt =>
             {
-                using (var connection = server.CreateConnection())
-                {
-                    // Close socket immediately
-                }
+                Assert.Null(opt.ServerCertificate);
+                Assert.NotNull(opt.ServerCertificateSelector);
+                Assert.Equal(ClientCertificateMode.RequireCertificate, opt.ClientCertificateMode);
+                ranUseHttpsAction = true;
+            });
+        });
 
-                await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
+        Assert.True(ranUseHttpsAction);
+
+        // Never lazy loaded
+        Assert.False(serverOptions.IsDevelopmentCertificateLoaded);
+        Assert.Null(serverOptions.DevelopmentCertificate);
+    }
+
+    [ConditionalFact]
+    [MinimumOSVersion(OperatingSystems.Windows, WindowsVersions.Win10)] // Investigation: https://github.com/dotnet/aspnetcore/issues/22917
+    public async Task EmptyRequestLoggedAsDebug()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
+            {
+                listenOptions.UseHttps(_x509Certificate2);
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            {
+                // Close socket immediately
             }
 
-            Assert.Equal(1, loggerProvider.FilterLogger.LastEventId.Id);
-            Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
-            Assert.True(loggerProvider.ErrorLogger.TotalErrorsLogged == 0,
-                userMessage: string.Join(Environment.NewLine, loggerProvider.ErrorLogger.ErrorMessages));
+            await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
         }
 
-        [Fact]
-        [QuarantinedTest]
-        public async Task ClientHandshakeFailureLoggedAsDebug()
-        {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+        Assert.Equal(1, loggerProvider.FilterLogger.LastEventId.Id);
+        Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
+        Assert.True(loggerProvider.ErrorLogger.ErrorMessages.Count == 0,
+            userMessage: string.Join(Environment.NewLine, loggerProvider.ErrorLogger.ErrorMessages));
+    }
 
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate());
-                }))
+    [ConditionalFact]
+    [MinimumOSVersion(OperatingSystems.Windows, WindowsVersions.Win10)] // Investigation: https://github.com/dotnet/aspnetcore/issues/22917
+    public async Task ClientHandshakeFailureLoggedAsDebug()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
             {
-                using (var connection = server.CreateConnection())
-                {
-                    // Send null bytes and close socket
-                    await connection.Stream.WriteAsync(new byte[10], 0, 10);
-                }
-
-                await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
+                listenOptions.UseHttps(_x509Certificate2);
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            {
+                // Send null bytes and close socket
+                await connection.Stream.WriteAsync(new byte[10], 0, 10);
             }
 
-            Assert.Equal(1, loggerProvider.FilterLogger.LastEventId.Id);
-            Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
-            Assert.True(loggerProvider.ErrorLogger.TotalErrorsLogged == 0,
-                userMessage: string.Join(Environment.NewLine, loggerProvider.ErrorLogger.ErrorMessages));
+            await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
         }
 
-        // Regression test for https://github.com/aspnet/KestrelHttpServer/issues/1103#issuecomment-246971172
-        [Fact]
-        public async Task DoesNotThrowObjectDisposedExceptionOnConnectionAbort()
-        {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+        Assert.Equal(1, loggerProvider.FilterLogger.LastEventId.Id);
+        Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
+        Assert.True(loggerProvider.ErrorLogger.ErrorMessages.Count == 0,
+            userMessage: string.Join(Environment.NewLine, loggerProvider.ErrorLogger.ErrorMessages));
+    }
 
-            await using (var server = new TestServer(async httpContext =>
-                {
-                    var ct = httpContext.RequestAborted;
-                    while (!ct.IsCancellationRequested)
-                    {
-                        try
-                        {
-                            await httpContext.Response.WriteAsync($"hello, world", ct);
-                            await Task.Delay(1000, ct);
-                        }
-                        catch (TaskCanceledException)
-                        {
-                            // Don't regard connection abort as an error
-                        }
-                    }
-                },
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate());
-                }))
+    // Regression test for https://github.com/aspnet/KestrelHttpServer/issues/1103#issuecomment-246971172
+    [Fact]
+    public async Task DoesNotThrowObjectDisposedExceptionOnConnectionAbort()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        await using (var server = new TestServer(async httpContext =>
             {
-                using (var connection = server.CreateConnection())
-                using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+                var ct = httpContext.RequestAborted;
+                while (!ct.IsCancellationRequested)
                 {
-                    await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
-                        enabledSslProtocols: SslProtocols.Tls11 | SslProtocols.Tls12,
-                        checkCertificateRevocation: false);
-
-                    var request = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost:\r\n\r\n");
-                    await sslStream.WriteAsync(request, 0, request.Length);
-
-                    await sslStream.ReadAsync(new byte[32], 0, 32);
-                }
-            }
-
-            Assert.False(loggerProvider.ErrorLogger.ObjectDisposedExceptionLogged);
-        }
-
-        [Fact]
-        [Repeat(20)]
-        [QuarantinedTest]
-        public async Task DoesNotThrowObjectDisposedExceptionFromWriteAsyncAfterConnectionIsAborted()
-        {
-            var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
-
-            await using (var server = new TestServer(async httpContext =>
-                {
-                    httpContext.Abort();
                     try
                     {
-                        await httpContext.Response.WriteAsync($"hello, world");
-                        tcs.SetResult(null);
+                        await httpContext.Response.WriteAsync("hello, world", ct);
+                        await Task.Delay(1000, ct);
                     }
-                    catch (Exception ex)
+                    catch (TaskCanceledException)
                     {
-                        tcs.SetException(ex);
+                        // Don't regard connection abort as an error
                     }
-                },
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate());
-                }))
-            {
-                using (var connection = server.CreateConnection())
-                using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
-                {
-                    await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
-                        enabledSslProtocols: SslProtocols.Tls11 | SslProtocols.Tls12,
-                        checkCertificateRevocation: false);
-
-                    var request = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost:\r\n\r\n");
-                    await sslStream.WriteAsync(request, 0, request.Length);
-
-                    await sslStream.ReadAsync(new byte[32], 0, 32);
                 }
+            },
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
+            {
+                listenOptions.UseHttps(_x509Certificate2);
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+            {
+                await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                    enabledSslProtocols: SslProtocols.None,
+                    checkCertificateRevocation: false);
 
-                await tcs.Task.DefaultTimeout();
+                var request = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost:\r\n\r\n");
+                await sslStream.WriteAsync(request, 0, request.Length);
+
+                await sslStream.ReadAsync(new byte[32], 0, 32);
             }
         }
 
-        // Regression test for https://github.com/aspnet/KestrelHttpServer/issues/1693
-        [Fact]
-        public async Task DoesNotThrowObjectDisposedExceptionOnEmptyConnection()
-        {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+        Assert.False(loggerProvider.ErrorLogger.ObjectDisposedExceptionLogged);
+    }
 
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate());
-                }))
+    [Fact]
+    public async Task DoesNotThrowObjectDisposedExceptionFromWriteAsyncAfterConnectionIsAborted()
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        loggerProvider.FilterLogger = new HttpsConnectionFilterLogger(expectedEventId: 3); // HttpConnectionEstablished
+        LoggerFactory.AddProvider(loggerProvider);
+
+        await using (var server = new TestServer(async httpContext =>
             {
-                using (var connection = server.CreateConnection())
-                using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+                httpContext.Abort();
+                try
                 {
-                    await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
-                        enabledSslProtocols: SslProtocols.Tls11 | SslProtocols.Tls12,
-                        checkCertificateRevocation: false);
+                    await httpContext.Response.WriteAsync("hello, world");
+                    tcs.SetResult();
                 }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            },
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
+            {
+                listenOptions.UseHttps(_x509Certificate2);
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+            {
+                await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                    enabledSslProtocols: SslProtocols.None,
+                    checkCertificateRevocation: false);
+
+                var request = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost:\r\n\r\n");
+                await sslStream.WriteAsync(request, 0, request.Length);
+
+                await sslStream.ReadAsync(new byte[32], 0, 32);
             }
 
-            Assert.False(loggerProvider.ErrorLogger.ObjectDisposedExceptionLogged);
+            await tcs.Task.DefaultTimeout();
         }
+    }
 
-        // Regression test for https://github.com/aspnet/KestrelHttpServer/pull/1197
-        [Fact]
-        public async Task ConnectionFilterDoesNotLeakBlock()
-        {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+    // Regression test for https://github.com/aspnet/KestrelHttpServer/issues/1693
+    [Fact]
+    public async Task DoesNotThrowObjectDisposedExceptionOnEmptyConnection()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
 
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate());
-                }))
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
             {
-                using (var connection = server.CreateConnection())
-                {
-                    connection.Reset();
-                }
+                listenOptions.UseHttps(_x509Certificate2);
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+            {
+                await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                    enabledSslProtocols: SslProtocols.None,
+                    checkCertificateRevocation: false);
             }
         }
 
-        [Fact]
-        public async Task HandshakeTimesOutAndIsLoggedAsDebug()
+        Assert.False(loggerProvider.ErrorLogger.ObjectDisposedExceptionLogged);
+    }
+
+    // Regression test for https://github.com/aspnet/KestrelHttpServer/pull/1197
+    [Fact]
+    public async Task ConnectionFilterDoesNotLeakBlock()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
+            {
+                listenOptions.UseHttps(_x509Certificate2);
+            }))
         {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+            using (var connection = server.CreateConnection())
+            {
+                connection.Reset();
+            }
+        }
+    }
 
-            var testContext = new TestServiceContext(LoggerFactory);
-            var heartbeatManager = new HeartbeatManager(testContext.ConnectionManager);
+    [Fact]
+    public async Task HandshakeTimesOutAndIsLoggedAsDebug()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
 
-            var handshakeStartedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
-            TimeSpan handshakeTimeout = default;
+        var testContext = new TestServiceContext(LoggerFactory);
 
-            await using (var server = new TestServer(context => Task.CompletedTask,
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            listenOptions =>
+            {
+                listenOptions.UseHttps(o =>
+                {
+                    o.ServerCertificate = new X509Certificate2(_x509Certificate2);
+                    o.HandshakeTimeout = TimeSpan.FromMilliseconds(100);
+                });
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            {
+                Assert.Equal(0, await connection.Stream.ReadAsync(new byte[1], 0, 1).DefaultTimeout());
+            }
+        }
+
+        await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
+        Assert.Equal(2, loggerProvider.FilterLogger.LastEventId);
+        Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
+    }
+
+    [Fact]
+    public async Task HandshakeTimesOutAndIsLoggedAsDebugWithAsyncCallback()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        var testContext = new TestServiceContext(LoggerFactory);
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            listenOptions =>
+            {
+                listenOptions.UseHttps(async (stream, clientHelloInfo, state, cancellationToken) =>
+                {
+                    await Task.Yield();
+
+                    return new SslServerAuthenticationOptions
+                    {
+                        ServerCertificate = _x509Certificate2,
+                    };
+                }, state: null, handshakeTimeout: TimeSpan.FromMilliseconds(100));
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            {
+                Assert.Equal(0, await connection.Stream.ReadAsync(new byte[1], 0, 1).DefaultTimeout());
+            }
+        }
+
+        await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
+        Assert.Equal(2, loggerProvider.FilterLogger.LastEventId);
+        Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
+    }
+
+    [Fact]
+    public async Task Http3_UseHttpsNoArgsWithDefaultCertificate_UseDefaultCertificate()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.TestOverrideDefaultCertificate = _x509Certificate2;
+
+        IFeatureCollection bindFeatures = null;
+        var multiplexedConnectionListenerFactory = new MockMultiplexedConnectionListenerFactory();
+        multiplexedConnectionListenerFactory.OnBindAsync = (ep, features) =>
+        {
+            bindFeatures = features;
+        };
+
+        var testContext = new TestServiceContext(LoggerFactory);
+        testContext.ServerOptions = serverOptions;
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            serverOptions =>
+            {
+                serverOptions.ListenLocalhost(5001, listenOptions =>
+                {
+                    listenOptions.Protocols = HttpProtocols.Http3;
+                    listenOptions.UseHttps();
+                });
+            },
+            services =>
+            {
+                services.AddSingleton<IMultiplexedConnectionListenerFactory>(multiplexedConnectionListenerFactory);
+            }))
+        {
+        }
+
+        Assert.NotNull(bindFeatures);
+
+        var sslOptions = bindFeatures.Get<TlsConnectionCallbackOptions>();
+        Assert.NotNull(sslOptions);
+
+        var sslServerAuthenticationOptions = await sslOptions.OnConnection(new TlsConnectionCallbackContext(), CancellationToken.None);
+        Assert.Equal(_x509Certificate2, sslServerAuthenticationOptions.ServerCertificate);
+    }
+
+    [Fact]
+    public async Task Http3_ConfigureHttpsDefaults_Works()
+    {
+        var serverOptions = CreateServerOptions();
+
+        IFeatureCollection bindFeatures = null;
+        var multiplexedConnectionListenerFactory = new MockMultiplexedConnectionListenerFactory();
+        multiplexedConnectionListenerFactory.OnBindAsync = (ep, features) =>
+        {
+            bindFeatures = features;
+        };
+
+        var testContext = new TestServiceContext(LoggerFactory);
+        testContext.ServerOptions = serverOptions;
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            serverOptions =>
+            {
+                serverOptions.ConfigureHttpsDefaults(https =>
+                {
+                    https.ServerCertificate = _x509Certificate2;
+                });
+                serverOptions.ListenLocalhost(5001, listenOptions =>
+                {
+                    listenOptions.Protocols = HttpProtocols.Http3;
+                    listenOptions.UseHttps();
+                });
+            },
+            services =>
+            {
+                services.AddSingleton<IMultiplexedConnectionListenerFactory>(multiplexedConnectionListenerFactory);
+            }))
+        {
+        }
+
+        Assert.NotNull(bindFeatures);
+
+        var tlsOptions = bindFeatures.Get<TlsConnectionCallbackOptions>();
+        Assert.NotNull(tlsOptions);
+
+        var sslServerAuthenticationOptions = await tlsOptions.OnConnection(new TlsConnectionCallbackContext(), CancellationToken.None);
+        Assert.Equal(_x509Certificate2, sslServerAuthenticationOptions.ServerCertificate);
+    }
+
+    [Fact]
+    public async Task Http1And2And3_NoUseHttps_MultiplexBindNotCalled()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.TestOverrideDefaultCertificate = _x509Certificate2;
+
+        var bindCalled = false;
+        var multiplexedConnectionListenerFactory = new MockMultiplexedConnectionListenerFactory();
+        multiplexedConnectionListenerFactory.OnBindAsync = (ep, features) =>
+        {
+            bindCalled = true;
+        };
+
+        var testContext = new TestServiceContext(LoggerFactory);
+        testContext.ServerOptions = serverOptions;
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            serverOptions =>
+            {
+                serverOptions.ListenLocalhost(5001, listenOptions =>
+                {
+                    listenOptions.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
+                });
+            },
+            services =>
+            {
+                services.AddSingleton<IMultiplexedConnectionListenerFactory>(multiplexedConnectionListenerFactory);
+            }))
+        {
+        }
+
+        Assert.False(bindCalled);
+    }
+
+    [Fact]
+    public async Task Http3_NoUseHttps_Throws()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.TestOverrideDefaultCertificate = _x509Certificate2;
+
+        var bindCalled = false;
+        var multiplexedConnectionListenerFactory = new MockMultiplexedConnectionListenerFactory();
+        multiplexedConnectionListenerFactory.OnBindAsync = (ep, features) =>
+        {
+            bindCalled = true;
+        };
+
+        var testContext = new TestServiceContext(LoggerFactory);
+        testContext.ServerOptions = serverOptions;
+        var ex = await Assert.ThrowsAsync<IOException>(async () =>
+        {
+            await using var server = new TestServer(context => Task.CompletedTask,
                 testContext,
-                listenOptions =>
+                serverOptions =>
                 {
-                    listenOptions.UseHttps(o =>
+                    serverOptions.ListenLocalhost(5001, listenOptions =>
                     {
-                        o.ServerCertificate = new X509Certificate2(TestResources.GetTestCertificate());
-                        o.OnAuthenticate = (_, __) =>
-                        {
-                            handshakeStartedTcs.SetResult(null);
-                        };
-
-                        handshakeTimeout = o.HandshakeTimeout;
+                        listenOptions.Protocols = HttpProtocols.Http3;
                     });
-                }))
-            {
-                using (var connection = server.CreateConnection())
+                },
+                services =>
                 {
-                    // HttpsConnectionAdapter dispatches via Task.Run() before starting the handshake.
-                    // Wait for the handshake to start before advancing the system clock.
-                    await handshakeStartedTcs.Task.DefaultTimeout();
+                    services.AddSingleton<IMultiplexedConnectionListenerFactory>(multiplexedConnectionListenerFactory);
+                });
+        });
 
-                    // Min amount of time between requests that triggers a handshake timeout.
-                    testContext.MockSystemClock.UtcNow += handshakeTimeout + Heartbeat.Interval + TimeSpan.FromTicks(1);
-                    heartbeatManager.OnHeartbeat(testContext.SystemClock.UtcNow);
+        Assert.False(bindCalled);
+        Assert.Equal("HTTP/3 requires HTTPS.", ex.InnerException.InnerException.Message);
+    }
 
-                    Assert.Equal(0, await connection.Stream.ReadAsync(new byte[1], 0, 1).DefaultTimeout());
-                }
-            }
+    [Fact]
+    public async Task Http3_ServerOptionsSelectionCallback_Works()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.TestOverrideDefaultCertificate = _x509Certificate2;
 
-            await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
-            Assert.Equal(2, loggerProvider.FilterLogger.LastEventId);
-            Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
-        }
-
-        [Fact]
-        public async Task ClientAttemptingToUseUnsupportedProtocolIsLoggedAsDebug()
+        IFeatureCollection bindFeatures = null;
+        var multiplexedConnectionListenerFactory = new MockMultiplexedConnectionListenerFactory();
+        multiplexedConnectionListenerFactory.OnBindAsync = (ep, features) =>
         {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+            bindFeatures = features;
+        };
 
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(TestResources.GetTestCertificate("no_extensions.pfx"));
-                }))
+        var testState = new object();
+        var testContext = new TestServiceContext(LoggerFactory);
+        testContext.ServerOptions = serverOptions;
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            serverOptions =>
             {
-                using (var connection = server.CreateConnection())
-                using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+                serverOptions.ListenLocalhost(5001, listenOptions =>
                 {
-                    // SslProtocols.Tls is TLS 1.0 which isn't supported by Kestrel by default.
-                    await Assert.ThrowsAnyAsync<Exception>(() =>
-                        sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
-                            enabledSslProtocols: SslProtocols.Tls,
-                            checkCertificateRevocation: false));
-                }
-            }
-
-            await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
-            Assert.Equal(1, loggerProvider.FilterLogger.LastEventId);
-            Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
-        }
-
-        [Fact]
-        public async Task OnAuthenticate_SeesOtherSettings()
-        {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
-
-            var testCert = TestResources.GetTestCertificate();
-            var onAuthenticateCalled = false;
-
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
-                {
-                    listenOptions.UseHttps(httpsOptions =>
+                    listenOptions.Protocols = HttpProtocols.Http3;
+                    listenOptions.UseHttps((SslStream stream, SslClientHelloInfo clientHelloInfo, object state, CancellationToken cancellationToken) =>
                     {
-                        httpsOptions.ServerCertificate = testCert;
-                        httpsOptions.OnAuthenticate = (connectionContext, authOptions) =>
-                        {
-                            Assert.Same(testCert, authOptions.ServerCertificate);
-                            onAuthenticateCalled = true;
-                        };
-                    });
-                }))
+                        return ValueTask.FromResult(new SslServerAuthenticationOptions());
+                    }, state: testState);
+                });
+            },
+            services =>
             {
-                using (var connection = server.CreateConnection())
-                using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
-                {
-                    await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
-                            enabledSslProtocols: SslProtocols.Tls11 | SslProtocols.Tls12,
-                            checkCertificateRevocation: false);
-                }
-            }
-
-            Assert.True(onAuthenticateCalled, "onAuthenticateCalled");
+                services.AddSingleton<IMultiplexedConnectionListenerFactory>(multiplexedConnectionListenerFactory);
+            }))
+        {
         }
 
-        [Fact]
-        public async Task OnAuthenticate_CanSetSettings()
+        Assert.NotNull(bindFeatures);
+
+        var tlsOptions = bindFeatures.Get<TlsConnectionCallbackOptions>();
+        Assert.NotNull(tlsOptions);
+
+        Assert.Collection(tlsOptions.ApplicationProtocols, p => Assert.Equal(SslApplicationProtocol.Http3, p));
+
+        Assert.Equal(testState, tlsOptions.OnConnectionState);
+    }
+
+    [Fact]
+    public async Task Http3_TlsHandshakeCallbackOptions_Works()
+    {
+        var serverOptions = CreateServerOptions();
+        serverOptions.TestOverrideDefaultCertificate = _x509Certificate2;
+
+        IFeatureCollection bindFeatures = null;
+        var multiplexedConnectionListenerFactory = new MockMultiplexedConnectionListenerFactory();
+        multiplexedConnectionListenerFactory.OnBindAsync = (ep, features) =>
         {
-            var loggerProvider = new HandshakeErrorLoggerProvider();
-            LoggerFactory.AddProvider(loggerProvider);
+            bindFeatures = features;
+        };
 
-            var testCert = TestResources.GetTestCertificate();
-            var onAuthenticateCalled = false;
-
-            await using (var server = new TestServer(context => Task.CompletedTask,
-                new TestServiceContext(LoggerFactory),
-                listenOptions =>
+        var testState = new object();
+        var testContext = new TestServiceContext(LoggerFactory);
+        testContext.ServerOptions = serverOptions;
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            testContext,
+            serverOptions =>
+            {
+                serverOptions.ListenLocalhost(5001, listenOptions =>
                 {
-                    listenOptions.UseHttps(httpsOptions =>
+                    listenOptions.Protocols = HttpProtocols.Http3;
+                    listenOptions.UseHttps(new TlsHandshakeCallbackOptions()
                     {
-                        httpsOptions.ServerCertificateSelector = (_, __) => throw new NotImplementedException();
-                        httpsOptions.OnAuthenticate = (connectionContext, authOptions) =>
+                        OnConnection = context =>
                         {
-                            Assert.Null(authOptions.ServerCertificate);
-                            Assert.NotNull(authOptions.ServerCertificateSelectionCallback);
-                            authOptions.ServerCertificate = testCert;
-                            authOptions.ServerCertificateSelectionCallback = null;
-                            onAuthenticateCalled = true;
-                        };
+                            return ValueTask.FromResult(new SslServerAuthenticationOptions());
+                        },
+                        OnConnectionState = testState
                     });
-                }))
+                });
+            },
+            services =>
             {
-                using (var connection = server.CreateConnection())
-                using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
-                {
-                    await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
-                            enabledSslProtocols: SslProtocols.Tls11 | SslProtocols.Tls12,
-                            checkCertificateRevocation: false);
-                }
-            }
-
-            Assert.True(onAuthenticateCalled, "onAuthenticateCalled");
+                services.AddSingleton<IMultiplexedConnectionListenerFactory>(multiplexedConnectionListenerFactory);
+            }))
+        {
         }
 
-        private class HandshakeErrorLoggerProvider : ILoggerProvider
+        Assert.NotNull(bindFeatures);
+
+        var tlsOptions = bindFeatures.Get<TlsConnectionCallbackOptions>();
+        Assert.Collection(tlsOptions.ApplicationProtocols, p => Assert.Equal(SslApplicationProtocol.Http3, p));
+
+        Assert.NotNull(tlsOptions.OnConnection);
+        Assert.Equal(testState, tlsOptions.OnConnectionState);
+    }
+
+    [Fact]
+    public async Task ClientAttemptingToUseUnsupportedProtocolIsLoggedAsDebug()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+#pragma warning disable SYSLIB0039 // TLS 1.0 and 1.1 are obsolete
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
+            {
+                listenOptions.UseHttps(TestResources.GetTestCertificate("no_extensions.pfx"), httpsOptions =>
+                {
+                    httpsOptions.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls11;
+                });
+            }))
         {
-            public HttpsConnectionFilterLogger FilterLogger { get; } = new HttpsConnectionFilterLogger();
-            public ApplicationErrorLogger ErrorLogger { get; } = new ApplicationErrorLogger();
-
-            public ILogger CreateLogger(string categoryName)
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
             {
-                if (categoryName == TypeNameHelper.GetTypeDisplayName(typeof(HttpsConnectionMiddleware)))
-                {
-                    return FilterLogger;
-                }
-                else
-                {
-                    return ErrorLogger;
-                }
+                // SslProtocols.Tls is TLS 1.0 which isn't supported by Kestrel by default.
+                await Assert.ThrowsAnyAsync<Exception>(() =>
+                    sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                        enabledSslProtocols: SslProtocols.Tls,
+                        checkCertificateRevocation: false));
             }
+        }
+#pragma warning restore SYSLIB0039
 
-            public void Dispose()
+        await loggerProvider.FilterLogger.LogTcs.Task.DefaultTimeout();
+        Assert.Equal(1, loggerProvider.FilterLogger.LastEventId);
+        Assert.Equal(LogLevel.Debug, loggerProvider.FilterLogger.LastLogLevel);
+    }
+
+    [Fact]
+    public async Task OnAuthenticate_SeesOtherSettings()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        var testCert = _x509Certificate2;
+        var onAuthenticateCalled = false;
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
             {
+                listenOptions.UseHttps(httpsOptions =>
+                {
+                    httpsOptions.ServerCertificate = testCert;
+                    httpsOptions.OnAuthenticate = (connectionContext, authOptions) =>
+                    {
+                        Assert.Same(testCert, authOptions.ServerCertificate);
+                        onAuthenticateCalled = true;
+                    };
+                });
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+            {
+                await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                        enabledSslProtocols: SslProtocols.None,
+                        checkCertificateRevocation: false);
             }
         }
 
-        private class HttpsConnectionFilterLogger : ILogger
-        {
-            public LogLevel LastLogLevel { get; set; }
-            public EventId LastEventId { get; set; }
-            public TaskCompletionSource<object> LogTcs { get; } = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(onAuthenticateCalled, "onAuthenticateCalled");
+    }
 
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+    [Fact]
+    public async Task OnAuthenticate_CanSetSettings()
+    {
+        var loggerProvider = new HandshakeErrorLoggerProvider();
+        LoggerFactory.AddProvider(loggerProvider);
+
+        var testCert = _x509Certificate2;
+        var onAuthenticateCalled = false;
+
+        await using (var server = new TestServer(context => Task.CompletedTask,
+            new TestServiceContext(LoggerFactory),
+            listenOptions =>
+            {
+                listenOptions.UseHttps(httpsOptions =>
+                {
+                    httpsOptions.ServerCertificateSelector = (_, __) => throw new NotImplementedException();
+                    httpsOptions.OnAuthenticate = (connectionContext, authOptions) =>
+                    {
+                        Assert.Null(authOptions.ServerCertificate);
+                        Assert.NotNull(authOptions.ServerCertificateSelectionCallback);
+                        authOptions.ServerCertificate = testCert;
+                        authOptions.ServerCertificateSelectionCallback = null;
+                        onAuthenticateCalled = true;
+                    };
+                });
+            }))
+        {
+            using (var connection = server.CreateConnection())
+            using (var sslStream = new SslStream(connection.Stream, true, (sender, certificate, chain, errors) => true))
+            {
+                await sslStream.AuthenticateAsClientAsync("127.0.0.1", clientCertificates: null,
+                        enabledSslProtocols: SslProtocols.None,
+                        checkCertificateRevocation: false);
+            }
+        }
+
+        Assert.True(onAuthenticateCalled, "onAuthenticateCalled");
+    }
+
+    private class HandshakeErrorLoggerProvider : ILoggerProvider
+    {
+        public HttpsConnectionFilterLogger FilterLogger { get; set; } = new HttpsConnectionFilterLogger();
+        public ApplicationErrorLogger ErrorLogger { get; } = new ApplicationErrorLogger();
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            if (categoryName == TypeNameHelper.GetTypeDisplayName(typeof(HttpsConnectionMiddleware)))
+            {
+                return FilterLogger;
+            }
+            else
+            {
+                return ErrorLogger;
+            }
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private class HttpsConnectionFilterLogger : ILogger
+    {
+        private readonly int? _expectedEventId;
+
+        public HttpsConnectionFilterLogger()
+        {
+        }
+
+        public HttpsConnectionFilterLogger(int expectedEventId)
+        {
+            _expectedEventId = expectedEventId;
+        }
+
+        public LogLevel LastLogLevel { get; set; }
+        public EventId LastEventId { get; set; }
+        public TaskCompletionSource LogTcs { get; } = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            if (!_expectedEventId.HasValue || _expectedEventId.Value == eventId)
             {
                 LastLogLevel = logLevel;
                 LastEventId = eventId;
-                LogTcs.SetResult(null);
-            }
-
-            public bool IsEnabled(LogLevel logLevel)
-            {
-                throw new NotImplementedException();
-            }
-
-            public IDisposable BeginScope<TState>(TState state)
-            {
-                throw new NotImplementedException();
+                LogTcs.SetResult();
             }
         }
 
-        private class ApplicationErrorLogger : ILogger
+        public bool IsEnabled(LogLevel logLevel)
         {
-            private List<string> _errorMessages = new List<string>();
+            throw new NotImplementedException();
+        }
 
-            public IEnumerable<string> ErrorMessages => _errorMessages;
+        public IDisposable BeginScope<TState>(TState state)
+        {
+            throw new NotImplementedException();
+        }
+    }
 
-            public int TotalErrorsLogged => _errorMessages.Count;
+    private class ApplicationErrorLogger : ILogger
+    {
+        public List<string> ErrorMessages => new List<string>();
+        public List<Exception> ErrorExceptions { get; } = new List<Exception>();
 
-            public bool ObjectDisposedExceptionLogged { get; set; }
+        public bool ObjectDisposedExceptionLogged { get; set; }
 
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            if (logLevel == LogLevel.Error)
             {
-                if (logLevel == LogLevel.Error)
+                var log = $"Log {logLevel}[{eventId}]: {formatter(state, exception)} {exception}";
+                ErrorMessages.Add(log);
+
+                if (exception != null)
                 {
-                    var log = $"Log {logLevel}[{eventId}]: {formatter(state, exception)} {exception}";
-                    _errorMessages.Add(log);
-                }
-
-                if (exception is ObjectDisposedException)
-                {
-                    ObjectDisposedExceptionLogged = true;
+                    ErrorExceptions.Add(exception);
                 }
             }
 
-            public bool IsEnabled(LogLevel logLevel)
+            if (exception is ObjectDisposedException)
             {
-                return true;
+                ObjectDisposedExceptionLogged = true;
             }
+        }
 
-            public IDisposable BeginScope<TState>(TState state)
-            {
-                return NullScope.Instance;
-            }
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public IDisposable BeginScope<TState>(TState state)
+        {
+            return NullScope.Instance;
         }
     }
 }

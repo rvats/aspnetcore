@@ -1,17 +1,16 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System.IO;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Logging;
+namespace JwtSample;
 
-namespace JwtSample
+public class Program
 {
-    public class Program
+    public static Task Main(string[] args)
     {
-        public static void Main(string[] args)
-        {
-            new WebHostBuilder()
+        return Host.CreateDefaultBuilder(args)
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
                 .ConfigureLogging(factory =>
                 {
                     factory.AddConsole();
@@ -21,9 +20,9 @@ namespace JwtSample
                 .UseKestrel()
                 .UseContentRoot(Directory.GetCurrentDirectory())
                 .UseIISIntegration()
-                .UseStartup<Startup>()
-                .Build()
-                .Run();
-        }
+                .UseStartup<Startup>();
+            })
+            .Build()
+            .RunAsync();
     }
 }

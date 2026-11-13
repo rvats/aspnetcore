@@ -2,10 +2,13 @@
 
   <PropertyGroup>
     <TargetFramework>$(DefaultNetCoreTargetFramework)</TargetFramework>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="Microsoft.Net.Http.Headers" />
+    <ProjectReference Include="$(RepoRoot)src\Http\Headers\src\Microsoft.Net.Http.Headers.csproj" />
+    <ProjectReference Include="$(RepoRoot)src\Http\Routing.Abstractions\src\Microsoft.AspNetCore.Routing.Abstractions.csproj" />
+    <ProjectReference Include="$(RepoRoot)src\Http\Routing\src\Microsoft.AspNetCore.Routing.csproj" />
   </ItemGroup>
 
 </Project>

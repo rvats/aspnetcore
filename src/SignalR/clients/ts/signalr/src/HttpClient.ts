@@ -1,5 +1,5 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
 import { AbortSignal } from "./AbortController";
 import { MessageHeaders } from "./IHubProtocol";
@@ -84,7 +84,7 @@ export abstract class HttpClient {
     /** Issues an HTTP GET request to the specified URL, returning a Promise that resolves with an {@link @microsoft/signalr.HttpResponse} representing the result.
      *
      * @param {string} url The URL for the request.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} for any completed HTTP response, or rejects if the request could not be completed.
      */
     public get(url: string): Promise<HttpResponse>;
 
@@ -92,7 +92,7 @@ export abstract class HttpClient {
      *
      * @param {string} url The URL for the request.
      * @param {HttpRequest} options Additional options to configure the request. The 'url' field in this object will be overridden by the url parameter.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} for any completed HTTP response, or rejects if the request could not be completed.
      */
     public get(url: string, options: HttpRequest): Promise<HttpResponse>;
     public get(url: string, options?: HttpRequest): Promise<HttpResponse> {
@@ -106,7 +106,7 @@ export abstract class HttpClient {
     /** Issues an HTTP POST request to the specified URL, returning a Promise that resolves with an {@link @microsoft/signalr.HttpResponse} representing the result.
      *
      * @param {string} url The URL for the request.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} for any completed HTTP response, or rejects if the request could not be completed.
      */
     public post(url: string): Promise<HttpResponse>;
 
@@ -114,7 +114,7 @@ export abstract class HttpClient {
      *
      * @param {string} url The URL for the request.
      * @param {HttpRequest} options Additional options to configure the request. The 'url' field in this object will be overridden by the url parameter.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} for any completed HTTP response, or rejects if the request could not be completed.
      */
     public post(url: string, options: HttpRequest): Promise<HttpResponse>;
     public post(url: string, options?: HttpRequest): Promise<HttpResponse> {
@@ -128,7 +128,7 @@ export abstract class HttpClient {
     /** Issues an HTTP DELETE request to the specified URL, returning a Promise that resolves with an {@link @microsoft/signalr.HttpResponse} representing the result.
      *
      * @param {string} url The URL for the request.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} for any completed HTTP response, or rejects if the request could not be completed.
      */
     public delete(url: string): Promise<HttpResponse>;
 
@@ -136,7 +136,7 @@ export abstract class HttpClient {
      *
      * @param {string} url The URL for the request.
      * @param {HttpRequest} options Additional options to configure the request. The 'url' field in this object will be overridden by the url parameter.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an {@link @microsoft/signalr.HttpResponse} for any completed HTTP response, or rejects if the request could not be completed.
      */
     public delete(url: string, options: HttpRequest): Promise<HttpResponse>;
     public delete(url: string, options?: HttpRequest): Promise<HttpResponse> {
@@ -150,7 +150,7 @@ export abstract class HttpClient {
     /** Issues an HTTP request to the specified URL, returning a {@link Promise} that resolves with an {@link @microsoft/signalr.HttpResponse} representing the result.
      *
      * @param {HttpRequest} request An {@link @microsoft/signalr.HttpRequest} describing the request to send.
-     * @returns {Promise<HttpResponse>} A Promise that resolves with an HttpResponse describing the response, or rejects with an Error indicating a failure.
+     * @returns {Promise<HttpResponse>} A Promise that resolves with an HttpResponse for any completed HTTP response, or rejects if the request could not be completed.
      */
     public abstract send(request: HttpRequest): Promise<HttpResponse>;
 

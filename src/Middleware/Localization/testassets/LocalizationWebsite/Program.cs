@@ -1,21 +1,20 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+namespace LocalizationWebsite;
 
-namespace LocalizationWebsite
+public static class Program
 {
-    public static class Program
+    public static Task Main(string[] args)
     {
-        public static void Main(string[] args)
-        {
-            var config = new ConfigurationBuilder()
-                .AddCommandLine(args)
-                .Build();
+        var config = new ConfigurationBuilder()
+            .AddCommandLine(args)
+            .Build();
 
-            var host = new WebHostBuilder()
+        var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
                 .ConfigureLogging((_, factory) =>
                 {
                     factory.AddConsole();
@@ -23,10 +22,10 @@ namespace LocalizationWebsite
                 })
                 .UseKestrel()
                 .UseConfiguration(config)
-                .UseStartup("LocalizationWebsite")
-                .Build();
+                .UseStartup("LocalizationWebsite");
+            })
+            .Build();
 
-            host.Run();
-        }
+        return host.RunAsync();
     }
 }

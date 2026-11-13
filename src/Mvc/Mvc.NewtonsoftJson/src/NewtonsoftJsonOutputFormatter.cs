@@ -1,169 +1,205 @@
-// Copyright (c) .NET Foundation. All rights reserved.
-// Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-using System;
 using System.Buffers;
-using System.IO;
 using System.Text;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.NewtonsoftJson;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 
-namespace Microsoft.AspNetCore.Mvc.Formatters
+namespace Microsoft.AspNetCore.Mvc.Formatters;
+
+/// <summary>
+/// A <see cref="TextOutputFormatter"/> for JSON content.
+/// </summary>
+public partial class NewtonsoftJsonOutputFormatter : TextOutputFormatter
 {
+    private readonly IArrayPool<char> _charPool;
+    private readonly MvcOptions _mvcOptions;
+    private MvcNewtonsoftJsonOptions? _jsonOptions;
+    private readonly AsyncEnumerableReader _asyncEnumerableReaderFactory;
+    private JsonSerializerSettings? _serializerSettings;
+
     /// <summary>
-    /// A <see cref="TextOutputFormatter"/> for JSON content.
+    /// Initializes a new <see cref="NewtonsoftJsonOutputFormatter"/> instance.
     /// </summary>
-    public class NewtonsoftJsonOutputFormatter : TextOutputFormatter
+    /// <param name="serializerSettings">
+    /// The <see cref="JsonSerializerSettings"/>. Should be either the application-wide settings
+    /// (<see cref="MvcNewtonsoftJsonOptions.SerializerSettings"/>) or an instance
+    /// <see cref="JsonSerializerSettingsProvider.CreateSerializerSettings"/> initially returned.
+    /// </param>
+    /// <param name="charPool">The <see cref="ArrayPool{Char}"/>.</param>
+    /// <param name="mvcOptions">The <see cref="MvcOptions"/>.</param>
+    [Obsolete("This constructor is obsolete and will be removed in a future version.")]
+    public NewtonsoftJsonOutputFormatter(
+        JsonSerializerSettings serializerSettings,
+        ArrayPool<char> charPool,
+        MvcOptions mvcOptions) : this(serializerSettings, charPool, mvcOptions, jsonOptions: null)
     {
-        private readonly IArrayPool<char> _charPool;
-        private readonly MvcOptions _mvcOptions;
+    }
 
-        // Perf: JsonSerializers are relatively expensive to create, and are thread safe. We cache
-        // the serializer and invalidate it when the settings change.
-        private JsonSerializer _serializer;
+    /// <summary>
+    /// Initializes a new <see cref="NewtonsoftJsonOutputFormatter"/> instance.
+    /// </summary>
+    /// <param name="serializerSettings">
+    /// The <see cref="JsonSerializerSettings"/>. Should be either the application-wide settings
+    /// (<see cref="MvcNewtonsoftJsonOptions.SerializerSettings"/>) or an instance
+    /// <see cref="JsonSerializerSettingsProvider.CreateSerializerSettings"/> initially returned.
+    /// </param>
+    /// <param name="charPool">The <see cref="ArrayPool{Char}"/>.</param>
+    /// <param name="mvcOptions">The <see cref="MvcOptions"/>.</param>
+    /// <param name="jsonOptions">The <see cref="MvcNewtonsoftJsonOptions"/>.</param>
+    public NewtonsoftJsonOutputFormatter(
+        JsonSerializerSettings serializerSettings,
+        ArrayPool<char> charPool,
+        MvcOptions mvcOptions,
+        MvcNewtonsoftJsonOptions? jsonOptions)
+    {
+        ArgumentNullException.ThrowIfNull(serializerSettings);
+        ArgumentNullException.ThrowIfNull(charPool);
 
-        /// <summary>
-        /// Initializes a new <see cref="NewtonsoftJsonOutputFormatter"/> instance.
-        /// </summary>
-        /// <param name="serializerSettings">
-        /// The <see cref="JsonSerializerSettings"/>. Should be either the application-wide settings
-        /// (<see cref="MvcNewtonsoftJsonOptions.SerializerSettings"/>) or an instance
-        /// <see cref="JsonSerializerSettingsProvider.CreateSerializerSettings"/> initially returned.
-        /// </param>
-        /// <param name="charPool">The <see cref="ArrayPool{Char}"/>.</param>
-        /// <param name="mvcOptions">The <see cref="MvcOptions"/>.</param>
-        public NewtonsoftJsonOutputFormatter(
-            JsonSerializerSettings serializerSettings,
-            ArrayPool<char> charPool,
-            MvcOptions mvcOptions)
+        SerializerSettings = serializerSettings;
+        _charPool = new JsonArrayPool<char>(charPool);
+        _mvcOptions = mvcOptions ?? throw new ArgumentNullException(nameof(mvcOptions));
+        _jsonOptions = jsonOptions;
+
+        SupportedEncodings.Add(Encoding.UTF8);
+        SupportedEncodings.Add(Encoding.Unicode);
+        SupportedMediaTypes.Add(MediaTypeHeaderValues.ApplicationJson);
+        SupportedMediaTypes.Add(MediaTypeHeaderValues.TextJson);
+        SupportedMediaTypes.Add(MediaTypeHeaderValues.ApplicationAnyJsonSyntax);
+
+        _asyncEnumerableReaderFactory = new AsyncEnumerableReader(_mvcOptions);
+    }
+
+    /// <summary>
+    /// Gets the <see cref="JsonSerializerSettings"/> used to configure the <see cref="JsonSerializer"/>.
+    /// </summary>
+    /// <remarks>
+    /// Any modifications to the <see cref="JsonSerializerSettings"/> object after this
+    /// <see cref="NewtonsoftJsonOutputFormatter"/> has been used will have no effect.
+    /// </remarks>
+    protected JsonSerializerSettings SerializerSettings { get; }
+
+    /// <summary>
+    /// Called during serialization to create the <see cref="JsonWriter"/>.
+    /// </summary>
+    /// <param name="writer">The <see cref="TextWriter"/> used to write.</param>
+    /// <returns>The <see cref="JsonWriter"/> used during serialization.</returns>
+    protected virtual JsonWriter CreateJsonWriter(TextWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        var jsonWriter = new JsonTextWriter(writer)
         {
-            if (serializerSettings == null)
-            {
-                throw new ArgumentNullException(nameof(serializerSettings));
-            }
+            ArrayPool = _charPool,
+            CloseOutput = false,
+            AutoCompleteOnClose = false
+        };
 
-            if (charPool == null)
-            {
-                throw new ArgumentNullException(nameof(charPool));
-            }
+        return jsonWriter;
+    }
 
-            SerializerSettings = serializerSettings;
-            _charPool = new JsonArrayPool<char>(charPool);
-            _mvcOptions = mvcOptions ?? throw new ArgumentNullException(nameof(mvcOptions));
-
-            SupportedEncodings.Add(Encoding.UTF8);
-            SupportedEncodings.Add(Encoding.Unicode);
-            SupportedMediaTypes.Add(MediaTypeHeaderValues.ApplicationJson);
-            SupportedMediaTypes.Add(MediaTypeHeaderValues.TextJson);
-            SupportedMediaTypes.Add(MediaTypeHeaderValues.ApplicationAnyJsonSyntax);
+    /// <summary>
+    /// Called during serialization to create the <see cref="JsonSerializer"/>.The formatter context
+    /// that is passed gives an ability to create serializer specific to the context.
+    /// </summary>
+    /// <returns>The <see cref="JsonSerializer"/> used during serialization and deserialization.</returns>
+    protected virtual JsonSerializer CreateJsonSerializer()
+    {
+        if (_serializerSettings == null)
+        {
+            // Lock the serializer settings once the first serialization has been initiated.
+            _serializerSettings = new JsonSerializerSettings(SerializerSettings);
         }
 
-        /// <summary>
-        /// Gets the <see cref="JsonSerializerSettings"/> used to configure the <see cref="JsonSerializer"/>.
-        /// </summary>
-        /// <remarks>
-        /// Any modifications to the <see cref="JsonSerializerSettings"/> object after this
-        /// <see cref="NewtonsoftJsonOutputFormatter"/> has been used will have no effect.
-        /// </remarks>
-        protected JsonSerializerSettings SerializerSettings { get; }
+        return JsonSerializer.Create(_serializerSettings);
+    }
 
-        /// <summary>
-        /// Called during serialization to create the <see cref="JsonWriter"/>.
-        /// </summary>
-        /// <param name="writer">The <see cref="TextWriter"/> used to write.</param>
-        /// <returns>The <see cref="JsonWriter"/> used during serialization.</returns>
-        protected virtual JsonWriter CreateJsonWriter(TextWriter writer)
+    /// <summary>
+    /// Called during serialization to create the <see cref="JsonSerializer"/>.The formatter context
+    /// that is passed gives an ability to create serializer specific to the context.
+    /// </summary>
+    /// <param name="context">A context object for <see cref="IOutputFormatter.WriteAsync(OutputFormatterWriteContext)"/>.</param>
+    /// <returns>The <see cref="JsonSerializer"/> used during serialization and deserialization.</returns>
+    protected virtual JsonSerializer CreateJsonSerializer(OutputFormatterWriteContext context)
+    {
+        return CreateJsonSerializer();
+    }
+
+    /// <inheritdoc />
+    public override async Task WriteResponseBodyAsync(OutputFormatterWriteContext context, Encoding selectedEncoding)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(selectedEncoding);
+
+        // Compat mode for derived options
+        _jsonOptions ??= context.HttpContext.RequestServices.GetRequiredService<IOptions<MvcNewtonsoftJsonOptions>>().Value;
+
+        var response = context.HttpContext.Response;
+
+        var responseStream = response.Body;
+        FileBufferingWriteStream? fileBufferingWriteStream = null;
+        if (!_mvcOptions.SuppressOutputFormatterBuffering)
         {
-            if (writer == null)
-            {
-                throw new ArgumentNullException(nameof(writer));
-            }
-
-            var jsonWriter = new JsonTextWriter(writer)
-            {
-                ArrayPool = _charPool,
-                CloseOutput = false,
-                AutoCompleteOnClose = false
-            };
-
-            return jsonWriter;
+            fileBufferingWriteStream = new FileBufferingWriteStream(_jsonOptions.OutputFormatterMemoryBufferThreshold);
+            responseStream = fileBufferingWriteStream;
         }
 
-        /// <summary>
-        /// Called during serialization to create the <see cref="JsonSerializer"/>.The formatter context
-        /// that is passed gives an ability to create serializer specific to the context.
-        /// </summary>
-        /// <returns>The <see cref="JsonSerializer"/> used during serialization and deserialization.</returns>
-        protected virtual JsonSerializer CreateJsonSerializer()
+        var value = context.Object;
+        if (value is not null && _asyncEnumerableReaderFactory.TryGetReader(value.GetType(), out var reader))
         {
-            if (_serializer == null)
-            {
-                _serializer = JsonSerializer.Create(SerializerSettings);
-            }
-
-            return _serializer;
-        }
-
-        /// <summary>
-        /// Called during serialization to create the <see cref="JsonSerializer"/>.The formatter context
-        /// that is passed gives an ability to create serializer specific to the context.
-        /// </summary>
-        /// <param name="context">A context object for <see cref="IOutputFormatter.WriteAsync(OutputFormatterWriteContext)"/>.</param>
-        /// <returns>The <see cref="JsonSerializer"/> used during serialization and deserialization.</returns>
-        protected virtual JsonSerializer CreateJsonSerializer(OutputFormatterWriteContext context)
-        {
-            return CreateJsonSerializer();
-        }
-
-        /// <inheritdoc />
-        public override async Task WriteResponseBodyAsync(OutputFormatterWriteContext context, Encoding selectedEncoding)
-        {
-            if (context == null)
-            {
-                throw new ArgumentNullException(nameof(context));
-            }
-
-            if (selectedEncoding == null)
-            {
-                throw new ArgumentNullException(nameof(selectedEncoding));
-            }
-
-            var response = context.HttpContext.Response;
-
-            var responseStream = response.Body;
-            FileBufferingWriteStream fileBufferingWriteStream = null;
-            if (!_mvcOptions.SuppressOutputFormatterBuffering)
-            {
-                fileBufferingWriteStream = new FileBufferingWriteStream();
-                responseStream = fileBufferingWriteStream;
-            }
-
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<NewtonsoftJsonOutputFormatter>>();
+            Log.BufferingAsyncEnumerable(logger, value);
             try
             {
-                await using (var writer = context.WriterFactory(responseStream, selectedEncoding))
-                {
-                    using (var jsonWriter = CreateJsonWriter(writer))
-                    {
-                        var jsonSerializer = CreateJsonSerializer(context);
-                        jsonSerializer.Serialize(jsonWriter, context.Object);
-                    }
-                }
-
-                if (fileBufferingWriteStream != null)
-                {
-                    response.ContentLength = fileBufferingWriteStream.Length;
-                    await fileBufferingWriteStream.DrainBufferAsync(response.BodyWriter);
-                }
+                value = await reader(value, context.HttpContext.RequestAborted);
             }
-            finally
+            catch (OperationCanceledException) when (context.HttpContext.RequestAborted.IsCancellationRequested) { }
+
+            if (context.HttpContext.RequestAborted.IsCancellationRequested)
             {
-                if (fileBufferingWriteStream != null)
-                {
-                    await fileBufferingWriteStream.DisposeAsync();
-                }
+                return;
+            }
+        }
+
+        try
+        {
+            await using (var writer = context.WriterFactory(responseStream, selectedEncoding))
+            {
+                using var jsonWriter = CreateJsonWriter(writer);
+                var jsonSerializer = CreateJsonSerializer(context);
+                jsonSerializer.Serialize(jsonWriter, value);
+            }
+
+            if (fileBufferingWriteStream != null)
+            {
+                response.ContentLength = fileBufferingWriteStream.Length;
+                await fileBufferingWriteStream.DrainBufferAsync(response.BodyWriter);
+            }
+        }
+        finally
+        {
+            if (fileBufferingWriteStream != null)
+            {
+                await fileBufferingWriteStream.DisposeAsync();
+            }
+        }
+    }
+
+    private static partial class Log
+    {
+        [LoggerMessage(1, LogLevel.Debug, "Buffering IAsyncEnumerable instance of type '{Type}'.", EventName = "BufferingAsyncEnumerable", SkipEnabledCheck = true)]
+        private static partial void BufferingAsyncEnumerable(ILogger logger, string? type);
+
+        public static void BufferingAsyncEnumerable(ILogger logger, object asyncEnumerable)
+        {
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                BufferingAsyncEnumerable(logger, asyncEnumerable.GetType().FullName);
             }
         }
     }

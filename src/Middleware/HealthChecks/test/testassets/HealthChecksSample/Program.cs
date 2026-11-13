@@ -1,19 +1,15 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-namespace HealthChecksSample
+namespace HealthChecksSample;
+
+public class Program
 {
-    public class Program
-    {
-        private static readonly Dictionary<string, Type> _scenarios;
+    private static readonly Dictionary<string, Type> _scenarios;
 
-        static Program()
-        {
-            _scenarios = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)
+    static Program()
+    {
+        _scenarios = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)
             {
                 { "", typeof(BasicStartup) },
                 { "basic", typeof(BasicStartup) },
@@ -23,29 +19,32 @@ namespace HealthChecksSample
                 { "db", typeof(DbHealthStartup) },
                 { "dbcontext", typeof(DbContextHealthStartup) },
             };
+    }
+
+    public static Task Main(string[] args)
+    {
+        return BuildWebHost(args).RunAsync();
+    }
+
+    public static IHost BuildWebHost(string[] args)
+    {
+        var config = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json")
+            .AddEnvironmentVariables(prefix: "ASPNETCORE_")
+            .AddCommandLine(args)
+            .Build();
+
+        var scenario = config["scenario"] ?? string.Empty;
+        if (!_scenarios.TryGetValue(scenario, out var startupType))
+        {
+            startupType = typeof(BasicStartup);
         }
 
-        public static void Main(string[] args)
-        {
-            BuildWebHost(args).Run();
-        }
-
-        public static IWebHost BuildWebHost(string[] args)
-        {
-            var config = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json")
-                .AddEnvironmentVariables(prefix: "ASPNETCORE_")
-                .AddCommandLine(args)
-                .Build();
-
-            var scenario = config["scenario"] ?? string.Empty;
-            if (!_scenarios.TryGetValue(scenario, out var startupType))
+        return new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
             {
-                startupType = typeof(BasicStartup);
-            }
-
-            return new WebHostBuilder()
+                webHostBuilder
                 .UseConfiguration(config)
                 .ConfigureLogging(builder =>
                 {
@@ -54,9 +53,9 @@ namespace HealthChecksSample
                     builder.AddConsole();
                 })
                 .UseKestrel()
-                .UseStartup(startupType)
-                .Build();
-        }
-
+                .UseStartup(startupType);
+            })
+            .Build();
     }
+
 }

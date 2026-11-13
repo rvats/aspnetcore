@@ -1,25 +1,27 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
 
-namespace WelcomePageSample
+namespace WelcomePageSample;
+
+public class Startup
 {
-    public class Startup
+    public void Configure(IApplicationBuilder app)
     {
-        public void Configure(IApplicationBuilder app)
-        {
-            app.UseWelcomePage();
-        }
+        app.UseWelcomePage();
+    }
 
-        public static void Main(string[] args)
-        {
-            var host = new WebHostBuilder()
+    public static Task Main(string[] args)
+    {
+        var host = new HostBuilder()
+            .ConfigureWebHost(webHostBuilder =>
+            {
+                webHostBuilder
                 .UseKestrel()
                 .UseIISIntegration()
-                .UseStartup<Startup>()
-                .Build();
+                .UseStartup<Startup>();
+            }).Build();
 
-            host.Run();
-        }
+        return host.RunAsync();
     }
 }
 
